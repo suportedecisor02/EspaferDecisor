@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Streamlit e Configurações
+.streamlit/config.toml
+secrets.toml
+
+# Segurança (NUNCA ENVIE ESTES)
+creds.json
+*.key
+.env
+
+# Dados e Logs
+*.log
+*.csv
+*.xlsx
