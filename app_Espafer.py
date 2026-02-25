@@ -970,14 +970,6 @@ class AppClientePrime:
     def tela_orcamento(self):
         st.markdown(f'<h1 style="color:black; font-weight:900;">{st.session_state.menu_ativo}</h1>', unsafe_allow_html=True)
 
-        st.info("""
-                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
-                
-                **Ex:**
-                - **Fornecedor**
-                - **Quantidade**
-                """)
-
         if st.session_state.dados_orcamento is None or st.session_state.dados_orcamento.empty:
             st.warning("Nenhum produto selecionado para orçamento.")
             return
@@ -1011,6 +1003,14 @@ class AppClientePrime:
         mapa_marca_fornecedor = df_forn_db.groupby('marca_aux')['fornecedor'].apply(
             lambda x: list(set(i for i in x if i.lower() not in ['none', 'nan', '']))
         ).to_dict()
+
+        st.info("""
+                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
+                
+                **Ex:**
+                - **Fornecedor**
+                - **Quantidade**
+                """)
 
         # --- 3. ÁREA DE FILTROS ---
         cats = sorted([str(c) for c in df_master['cat_filtro'].unique() if str(c).strip() not in ["", "None", "nan"]])
