@@ -1936,7 +1936,7 @@ def verificar_login():
 
                 if admin_user and admin_senha and user_input == admin_user and pass_input == admin_senha:
                     st.session_state.logado = True
-                    st.session_state.nome_usuario = "Administrador"
+                    st.session_state.nome_usuario = "Espafer"
                     st.session_state.tentativas_login = 0
                     logger.info("Login de emergência utilizado")
                     st.rerun()
