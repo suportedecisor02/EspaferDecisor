@@ -1,5 +1,3 @@
-import subprocess
-import sys
 import bcrypt
 import streamlit as st
 import pandas as pd
@@ -11,14 +9,10 @@ from email.mime.application import MIMEApplication
 from fpdf import FPDF
 import io
 import datetime
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, Protection
-from openpyxl.utils import get_column_letter
-from matplotlib.colors import LinearSegmentedColormap
-import urllib.parse
 import logging
 from logging.handlers import RotatingFileHandler
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List
 
 # ==================== CONFIGURAÇÃO DE LOGGING COM ROTAÇÃO ====================
 # Máximo de 5MB por arquivo, mantém 3 backups — evita crescimento ilimitado
