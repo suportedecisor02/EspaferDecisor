@@ -1,4 +1,4 @@
-#import bcrypt
+import bcrypt
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -153,69 +153,68 @@ class DatabaseManager:
             logger.error(f"Erro inesperado ao conectar: {e}")
             raise
 
-    # def validar_usuario(self, usuario, senha):
-    #     """
-    #     Valida o usuário com compatibilidade dupla:
-    #     - Se a senha no banco começa com '$2b$' ou '$2a$', trata como hash bcrypt.
-    #     - Caso contrário, compara em texto puro (senhas antigas ainda não migradas)
-    #       e aproveita para fazer a migração automatica para bcrypt na mesma operacao.
-    #     """
-    #     usuario_limpo = str(usuario).strip()
-    #     senha_digitada = str(senha).strip()
-    #     senha_bytes = senha_digitada.encode('utf-8')
+    def validar_usuario(self, usuario, senha):
+        """
+        Valida o usuário com compatibilidade dupla:
+        - Se a senha no banco começa com '$2b$' ou '$2a$', trata como hash bcrypt.
+        - Caso contrário, compara em texto puro (senhas antigas ainda não migradas)
+          e aproveita para fazer a migração automatica para bcrypt na mesma operacao.
+        """
+        usuario_limpo = str(usuario).strip()
+        senha_digitada = str(senha).strip()
+        senha_bytes = senha_digitada.encode('utf-8')
 
-    #     query = "SELECT usuario, nome, senha FROM usuarios_sistema WHERE LOWER(usuario) = LOWER(%s) AND ativo = TRUE"
+        query = "SELECT usuario, nome, senha FROM usuarios_sistema WHERE LOWER(usuario) = LOWER(%s) AND ativo = TRUE"
 
-        # conn = None
-        # try:
-        #     conn = self._get_connection()
-        #     if not conn:
-        #         return None
-        #     cursor = conn.cursor()
-        #     cursor.execute(query, (usuario_limpo,))
-        #     res = cursor.fetchone()
+        conn = None
+        try:
+            conn = self._get_connection()
+            if not conn:
+                return None
+            cursor = conn.cursor()
+            cursor.execute(query, (usuario_limpo,))
+            res = cursor.fetchone()
 
-        #     if not res:
-        #         cursor.close()
-        #         return None
+            if not res:
+                cursor.close()
+                return None
 
-        #     usuario_bd, nome_bd, senha_bd = res
-        #     senha_bd = str(senha_bd).strip()
-        #     autenticado = False
+            usuario_bd, nome_bd, senha_bd = res
+            senha_bd = str(senha_bd).strip()
+            autenticado = False
 
-            # --- Verifica se e hash bcrypt ---
-        #     if senha_bd.startswith('$2b$') or senha_bd.startswith('$2a$'):
-        #         try:
-        #             autenticado = bcrypt.checkpw(senha_bytes, senha_bd.encode('utf-8'))
-        #         except Exception:
-        #             autenticado = False
-        #     else:
-        #         # --- Senha ainda em texto puro: compara diretamente ---
-        #         autenticado = (senha_digitada == senha_bd)
+            if senha_bd.startswith('$2b$') or senha_bd.startswith('$2a$'):
+                try:
+                    autenticado = bcrypt.checkpw(senha_bytes, senha_bd.encode('utf-8'))
+                except Exception:
+                    autenticado = False
+            else:
+                # --- Senha ainda em texto puro: compara diretamente ---
+                autenticado = (senha_digitada == senha_bd)
 
-        #         if autenticado:
-        #             # Migracao automatica: salva o hash bcrypt no banco
-        #             try:
-        #                 novo_hash = bcrypt.hashpw(senha_bytes, bcrypt.gensalt()).decode('utf-8')
-        #                 cursor.execute(
-        #                     "UPDATE usuarios_sistema SET senha = %s WHERE LOWER(usuario) = LOWER(%s)",
-        #                     (novo_hash, usuario_limpo)
-        #                 )
-        #                 conn.commit()
-        #                 logger.info(f"Senha do usuario migrada para bcrypt com sucesso.")
-        #             except Exception as e:
-        #                 logger.warning(f"Nao foi possivel migrar a senha para bcrypt: {e}")
+                if autenticado:
+                    # Migracao automatica: salva o hash bcrypt no banco
+                    try:
+                        novo_hash = bcrypt.hashpw(senha_bytes, bcrypt.gensalt()).decode('utf-8')
+                        cursor.execute(
+                            "UPDATE usuarios_sistema SET senha = %s WHERE LOWER(usuario) = LOWER(%s)",
+                            (novo_hash, usuario_limpo)
+                        )
+                        conn.commit()
+                        logger.info(f"Senha do usuario migrada para bcrypt com sucesso.")
+                    except Exception as e:
+                        logger.warning(f"Nao foi possivel migrar a senha para bcrypt: {e}")
 
-        #     cursor.close()
-        #     return (usuario_bd, nome_bd) if autenticado else None
+            cursor.close()
+            return (usuario_bd, nome_bd) if autenticado else None
 
-        # except Exception as e:
-        #     logger.error(f"Erro ao acessar tabela de usuarios: {e}")
-        #     st.error("Erro ao verificar credenciais. Tente novamente.")
-        #     return None
-        # finally:
-        #     if conn:
-        #         conn.close()
+        except Exception as e:
+            logger.error(f"Erro ao acessar tabela de usuarios: {e}")
+            st.error("Erro ao verificar credenciais. Tente novamente.")
+            return None
+        finally:
+            if conn:
+                conn.close()
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def _ordenar_naturalmente(self, lista):
