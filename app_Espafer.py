@@ -140,13 +140,13 @@ class DatabaseManager:
 
     def _get_connection(self):
         """Cria conexão com o banco de dados."""
-        password = urllib.parse.quote_plus(self.creds.get("password"))
+        #password = urllib.parse.quote_plus(self.creds.get("password"))
         try:
             return psycopg2.connect(
                 host=self.creds.get("host"),
                 database=self.creds.get("database"),
                 user=self.creds.get("user") or self.creds.get("username"),
-                password=password,
+                password=self.creds.get("password"),
                 port=int(self.creds.get("port", 5432))
             )
         except psycopg2.OperationalError as e:
