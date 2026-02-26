@@ -979,6 +979,14 @@ class AppClientePrime:
         if df_forn_db.empty:
             st.error("A tabela de fornecedores está vazia.")
             return
+        
+        st.info("""
+                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
+                
+                **Ex:**
+                - **Fornecedor**
+                - **Quantidade**
+                """)
 
         df_forn_db['fornecedor'] = df_forn_db['fornecedor'].astype(str).str.strip()
         df_forn_db['marca_aux'] = df_forn_db['marca'].astype(str).str.strip().str.upper()
@@ -1039,14 +1047,6 @@ class AppClientePrime:
                 df_master['Fornecedor'] = df_master['marca_aux'].apply(sugerir_um_fornecedor)
 
         st.session_state.dados_orcamento = df_master
-
-        st.info("""
-                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
-                
-                **Ex:**
-                - **Fornecedor**
-                - **Quantidade**
-                """)
 
         # --- 5. FILTRAGEM DA VIEW ---
         df_view = df_master.copy()
