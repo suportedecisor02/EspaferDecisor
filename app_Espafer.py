@@ -140,11 +140,6 @@ class DatabaseManager:
         """Cria conexão com o banco de dados."""
         #password = urllib.parse.quote_plus(self.creds.get("password"))
         try:
-            st.error(self.creds.get("host"))
-            st.error(self.creds.get("database"))
-            st.error(self.creds.get("username"))
-            st.error(self.creds.get("db_pass"))
-            st.error(self.creds.get("port"))
             return psycopg2.connect(
                 host=self.creds.get("host"),
                 database=self.creds.get("database"),
@@ -217,7 +212,7 @@ class DatabaseManager:
 
         except Exception as e:
             logger.error(f"Erro ao acessar tabela de usuarios: {e}")
-            st.error(f"Erro ao verificar credenciais. Tente novamente. {e}")
+            st.error(f"Erro ao verificar credenciais. Tente novamente.")
             return None
         finally:
             if conn:
