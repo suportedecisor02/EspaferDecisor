@@ -14,8 +14,6 @@ from logging.handlers import RotatingFileHandler
 import re
 from typing import List
 
-import urllib
-
 # ==================== CONFIGURAÇÃO DE LOGGING COM ROTAÇÃO ====================
 # Máximo de 5MB por arquivo, mantém 3 backups — evita crescimento ilimitado
 _log_handler_file = RotatingFileHandler('app.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
