@@ -143,7 +143,7 @@ class DatabaseManager:
             st.error(self.creds.get("host"))
             st.error(self.creds.get("database"))
             st.error(self.creds.get("username"))
-            st.error(self.creds.get("db_pass"))
+            st.error([self.creds.get("db_pass"),'\t jblkjkjl'])
             st.error(self.creds.get("port"))
             return psycopg2.connect(
                 host=self.creds.get("host"),
