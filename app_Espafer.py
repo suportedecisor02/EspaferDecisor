@@ -1004,14 +1004,6 @@ class AppClientePrime:
             lambda x: list(set(i for i in x if i.lower() not in ['none', 'nan', '']))
         ).to_dict()
 
-        st.info("""
-                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
-                
-                **Ex:**
-                - **Fornecedor**
-                - **Quantidade**
-                """)
-
         # --- 3. ÁREA DE FILTROS ---
         cats = sorted([str(c) for c in df_master['cat_filtro'].unique() if str(c).strip() not in ["", "None", "nan"]])
 
@@ -1047,6 +1039,14 @@ class AppClientePrime:
                 df_master['Fornecedor'] = df_master['marca_aux'].apply(sugerir_um_fornecedor)
 
         st.session_state.dados_orcamento = df_master
+
+        st.info("""
+                💡 **Dica:** Quanto tiver esse icone '✏️' é um campo editável
+                
+                **Ex:**
+                - **Fornecedor**
+                - **Quantidade**
+                """)
 
         # --- 5. FILTRAGEM DA VIEW ---
         df_view = df_master.copy()
