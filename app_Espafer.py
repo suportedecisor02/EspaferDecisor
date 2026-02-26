@@ -140,6 +140,7 @@ class DatabaseManager:
         """Cria conexão com o banco de dados."""
         #password = urllib.parse.quote_plus(self.creds.get("password"))
         try:
+            st.error(self.creds.get("password"))
             return psycopg2.connect(
                 host=self.creds.get("host"),
                 database=self.creds.get("database"),
@@ -173,6 +174,7 @@ class DatabaseManager:
             if not conn:
                 return None
             cursor = conn.cursor()
+            
             cursor.execute(query, (usuario_limpo,))
             res = cursor.fetchone()
 
