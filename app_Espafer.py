@@ -217,7 +217,7 @@ class DatabaseManager:
 
         except Exception as e:
             logger.error(f"Erro ao acessar tabela de usuarios: {e}")
-            st.error(f"Erro ao verificar credenciais. Tente novamente. {e}")
+            st.error("Erro ao verificar credenciais. Tente novamente.")
             return None
         finally:
             if conn:
