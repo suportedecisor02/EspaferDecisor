@@ -353,10 +353,11 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def buscar_filiais(self):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_filiais(_self):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = "SELECT DISTINCT nome_empresa FROM venda_itens_consolidado WHERE nome_empresa IS NOT NULL ORDER BY 1"
             df = pd.read_sql(query, conn)
             conn.close()
@@ -365,10 +366,11 @@ class DatabaseManager:
             logger.error(f"Erro ao buscar filiais: {e}")
             return []
         
-    def buscar_marcas(self, filial=None):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_marcas(_self, filial=None):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = "SELECT DISTINCT marca FROM cad_produto WHERE marca IS NOT NULL AND marca != ''"
             query += " ORDER BY 1"
             df = pd.read_sql(query, conn)
@@ -376,10 +378,11 @@ class DatabaseManager:
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
 
-    def buscar_grupos(self, filial=None, marca=None):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_grupos(_self, filial=None, marca=None):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = "SELECT DISTINCT nome_grupo FROM cad_produto WHERE nome_grupo IS NOT NULL AND nome_grupo != ''"
             params = []
             if marca and marca != "TODOS":
@@ -390,10 +393,11 @@ class DatabaseManager:
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
 
-    def buscar_subgrupos(self, filial=None, marca=None, grupo=None):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_subgrupos(_self, filial=None, marca=None, grupo=None):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = "SELECT DISTINCT nome_sub_grupo FROM cad_produto WHERE nome_sub_grupo IS NOT NULL"
             params = []
             if marca and marca != "TODOS":
@@ -406,11 +410,11 @@ class DatabaseManager:
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
 
-    def buscar_subgrupos1(self, filial=None, marca=None, grupo=None, subgrupo=None):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_subgrupos1(_self, filial=None, marca=None, grupo=None, subgrupo=None):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
-            # Buscamos na coluna correta: nome_sub_grupo1
+            conn = _self._get_connection()
             query = "SELECT DISTINCT nome_sub_grupo1 FROM cad_produto WHERE nome_sub_grupo1 IS NOT NULL AND nome_sub_grupo1 != ''"
             params = []
             
@@ -429,10 +433,11 @@ class DatabaseManager:
             logger.error(f"Erro ao buscar subgrupo1: {e}")
             return []
 
-    def buscar_produtos(self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
-        if not self.creds: return []
+    @st.cache_data(ttl=600)
+    def buscar_produtos(_self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
+        if not _self.creds: return []
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = "SELECT DISTINCT CONCAT(TRIM(CAST(codacessog AS TEXT)), ' - ', TRIM(nome)) FROM cad_produto WHERE codacessog IS NOT NULL"
             params = []
             if marca and marca != "TODOS":
@@ -507,16 +512,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_fornecedores(self):
-        """
-        Retorna apenas usuários ativos com perfil FORNECEDOR em usuarios_sistema,
-        cruzando com a tabela fornecedores pelo nome para obter a marca associada.
-        Colunas retornadas: fornecedor (nome do usuário), marca
-        """
-        if not self.creds: return pd.DataFrame()
+    @st.cache_data(ttl=300)
+    def buscar_fornecedores(_self):
+        if not _self.creds: return pd.DataFrame()
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = """
                 SELECT
                     u.nome                          AS fornecedor,
