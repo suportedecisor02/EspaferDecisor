@@ -181,7 +181,7 @@ class DatabaseManager:
         finally:
             if conn:
                 conn.close()
-
+    @st.cache_data(ttl=600)
     def buscar_pedidos_fornecedor(self, nome_fornecedor=None):
         """Busca pedidos. Se nome_fornecedor informado, filtra por ele."""
         conn = None
@@ -208,7 +208,7 @@ class DatabaseManager:
             return pd.DataFrame()
         finally:
             if conn: conn.close()
-
+    @st.cache_data(ttl=600)
     def buscar_itens_pedido(self, pedido_id):
         """Busca os itens de um pedido específico."""
         conn = None
@@ -352,7 +352,7 @@ class DatabaseManager:
         finally:
             if conn:
                 conn.close()
-
+    @st.cache_data(ttl=600)
     def buscar_filiais(self):
         if not self.creds: return []
         try:
@@ -364,7 +364,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Erro ao buscar filiais: {e}")
             return []
-        
+    @st.cache_data(ttl=600)
     def buscar_marcas(self, filial=None):
         if not self.creds: return []
         try:
@@ -375,7 +375,7 @@ class DatabaseManager:
             conn.close()
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
-
+    @st.cache_data(ttl=600)
     def buscar_grupos(self, filial=None, marca=None):
         if not self.creds: return []
         try:
@@ -389,7 +389,7 @@ class DatabaseManager:
             conn.close()
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
-
+    @st.cache_data(ttl=600)
     def buscar_subgrupos(self, filial=None, marca=None, grupo=None):
         if not self.creds: return []
         try:
