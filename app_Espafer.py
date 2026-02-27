@@ -1938,7 +1938,7 @@ class AppClientePrime:
         if 'estrategia_ativa' not in st.session_state:
             st.session_state['estrategia_ativa'] = 'menor_preco'
         
-        st.markdown('<h1 style="color:black; font-weight:900;">💡 Inteligência de Compra</h1>', unsafe_allow_html=True)
+        st.markdown('<h1 style="color:black; font-weight:900;">Inteligência de Compra</h1>', unsafe_allow_html=True)
         
         # CSS para correção de cores e botões
         st.markdown("""
