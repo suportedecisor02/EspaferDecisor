@@ -263,7 +263,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def criar_pedido(self, cliente_nome, fornecedor_nome, itens_df):
+    def criar_pedido(self, cliente_nome, fornecedor_nome, itens_df, idcobertura=None):
         """Cria um pedido novo e insere os itens."""
         conn = None
         try:
@@ -280,7 +280,6 @@ class DatabaseManager:
             numero_pedido = f"PED-{proximo_numero:04d}"
     
             # 2. Buscar o id_fornecedor na tabela fornecedores
-            # Ajustado para usar 'id_fornecedor' conforme sua alteração de tabela anterior
             id_fornecedor_bd = None
             try:
                 cur.execute(
@@ -293,37 +292,34 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Não foi possível localizar ID para fornecedor {fornecedor_nome}: {e}")
     
-            # 3. Verificar se a coluna fornecedor_nome existe (evita erro de transação)
+            # 3. Verificar se a coluna fornecedor_nome existe
             cur.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'pedidos_vendas' AND column_name = 'fornecedor_nome'
             """)
             tem_col_forn_nome = cur.fetchone() is not None
     
-            # 4. Inserir o Cabeçalho do Pedido
+            # 4. Inserir o Cabeçalho do Pedido com idcobertura
             if tem_col_forn_nome:
                 cur.execute("""
                     INSERT INTO public.pedidos_vendas
-                        (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor, status, data_criacao)
-                    VALUES (%s, %s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
+                        (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor, idcobertura, status, data_criacao)
+                    VALUES (%s, %s, %s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
                     RETURNING id
-                """, (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor_bd))
+                """, (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor_bd, idcobertura))
             else:
                 cur.execute("""
                     INSERT INTO public.pedidos_vendas
-                        (numero_pedido, cliente_nome, id_fornecedor, status, data_criacao)
-                    VALUES (%s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
+                        (numero_pedido, cliente_nome, id_fornecedor, idcobertura, status, data_criacao)
+                    VALUES (%s, %s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
                     RETURNING id
-                """, (numero_pedido, cliente_nome, id_fornecedor_bd))
+                """, (numero_pedido, cliente_nome, id_fornecedor_bd, idcobertura))
     
             pedido_id = cur.fetchone()[0]
     
             # 5. Inserir os Itens do Pedido
             for _, row in itens_df.iterrows():
-                # Tenta pegar a quantidade de várias colunas possíveis
                 qtd = row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0
-                
-                # Limpeza de dados básica
                 cod_prod = str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0')
                 nome_prod = str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado')
     
@@ -341,12 +337,12 @@ class DatabaseManager:
     
             conn.commit()
             cur.close()
-            logger.info(f"Sucesso: Pedido {numero_pedido} criado para {fornecedor_nome}")
+            logger.info(f"Sucesso: Pedido {numero_pedido} criado para {fornecedor_nome} com idcobertura={idcobertura}")
             return numero_pedido
     
         except Exception as e:
             if conn:
-                conn.rollback() # CRITICAL: Destrava o banco para o próximo fornecedor do loop
+                conn.rollback()
             logger.error(f"Erro fatal ao criar pedido para {fornecedor_nome}: {e}")
             raise e 
         finally:
@@ -455,23 +451,23 @@ class DatabaseManager:
         except: return []
 
     def buscar_pedidos_respondidos(self, cliente_nome=None):
-        """Busca pedidos com status Enviado agrupados por número base."""
+        """Busca pedidos com status Enviado agrupados por idcobertura."""
         conn = None
         try:
             conn = self._get_connection()
             query = """
                 SELECT 
-                    REGEXP_REPLACE(numero_pedido, '-\\d+$', '') as grupo_pedido,
+                    idcobertura as grupo_pedido,
                     COUNT(DISTINCT id) as qtd_fornecedores,
                     MIN(data_criacao) as data_solicitacao,
                     STRING_AGG(DISTINCT fornecedor_nome, ', ') as fornecedores,
                     STRING_AGG(DISTINCT numero_pedido, ', ' ORDER BY numero_pedido) as numeros_pedidos
                 FROM pedidos_vendas
-                WHERE status = 'Enviado'
+                WHERE status = 'Enviado' AND idcobertura IS NOT NULL
             """
             if cliente_nome:
                 query += " AND LOWER(cliente_nome) = LOWER(%s)"
-            query += " GROUP BY grupo_pedido ORDER BY MIN(data_criacao) DESC"
+            query += " GROUP BY idcobertura ORDER BY MIN(data_criacao) DESC"
             
             if cliente_nome:
                 return pd.read_sql(query, conn, params=(cliente_nome,))
@@ -483,8 +479,8 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_detalhes_comparativo(self, grupo_pedido):
-        """Busca detalhes de todos os fornecedores de um grupo de pedidos."""
+    def buscar_detalhes_comparativo(self, idcobertura):
+        """Busca detalhes de todos os fornecedores de um idcobertura."""
         conn = None
         try:
             conn = self._get_connection()
@@ -500,12 +496,12 @@ class DatabaseManager:
                     pi.prazo_entrega
                 FROM pedidos_vendas pv
                 JOIN pedidos_itens pi ON pv.id = pi.pedido_id
-                WHERE REGEXP_REPLACE(pv.numero_pedido, '-\\d+$', '') = %s
+                WHERE pv.idcobertura = %s
                   AND pv.status = 'Enviado'
                   AND pi.valor_unitario > 0
                 ORDER BY pi.codigo_produto, pv.fornecedor_nome
             """
-            return pd.read_sql(query, conn, params=(grupo_pedido,))
+            return pd.read_sql(query, conn, params=(idcobertura,))
         except Exception as e:
             logger.error(f"Erro ao buscar detalhes comparativo: {e}")
             return pd.DataFrame()
@@ -728,12 +724,6 @@ class AppClientePrime:
         self.db = DatabaseManager()
         self.inicializar_estado()
         self.aplicar_estilos()
-    
-    def _get_base64_image(self, image_path):
-        """Converte imagem para base64 para uso em CSS"""
-        import base64
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode()
 
     def inicializar_estado(self):
         perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
@@ -844,18 +834,6 @@ class AppClientePrime:
                 border-color: #0047AB;     /* Borda azul ao passar o mouse */
                 box-shadow: 0 4px 8px rgba(0,0,0,0.05);
             }
-            
-            /* --- BOTÃO DE LOGOUT (SETA) --- */
-            section[data-testid="stSidebar"] button[key="btn_logout_top"] {
-                font-size: 3rem !important;
-                padding: 0 !important;
-                line-height: 1 !important;
-                min-width: 50px !important;
-                height: 50px !important;
-            }
-            section[data-testid="stSidebar"] div.stButton > button[key="btn_logout_top"] {
-                font-size: 3rem !important;
-            }
                     
             </style>
         """, unsafe_allow_html=True)
@@ -875,56 +853,67 @@ class AppClientePrime:
                     unsafe_allow_html=True
                 )
             
-            # Usuário e Logout - Design Profissional
-            perfil_label = {"ADM": "🔑 Administrador", "CLIENTE": "🏪 Cliente", "FORNECEDOR": "🚚 Fornecedor"}.get(perfil, "👤 Usuário")
-            
+            # Card Único Profissional com Seta de Logout
             st.markdown("""
                 <style>
-                    .user-card {
-                        background: linear-gradient(135deg, rgba(0, 71, 171, 0.1) 0%, rgba(0, 0, 0, 0.05) 100%);
-                        border-radius: 12px;
-                        padding: 12px 16px;
-                        margin: 10px 0px 15px 0px;
-                        border-left: 4px solid #0047AB;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                    }
-                    .user-role {
-                        color: #0047AB;
-                        font-size: 0.75rem;
-                        font-weight: 600;
-                        text-transform: uppercase;
-                        letter-spacing: 0.5px;
-                        margin-bottom: 4px;
-                    }
-                    .user-name {
-                        color: #FFFFFF;
-                        font-size: 1rem;
-                        font-weight: 700;
-                        margin: 0;
-                    }
+                .user-box {
+                    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+                    border-radius: 12px;
+                    padding: 16px 18px;
+                    margin-bottom: 20px;
+                    border-left: 4px solid #0047AB;
+                    box-shadow: 0 4px 16px rgba(0,71,171,0.2);
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                }
+                .user-details {
+                    flex: 1;
+                }
+                .user-name-text {
+                    color: #FFFFFF !important;
+                    font-size: 1.1rem;
+                    font-weight: 800;
+                    margin: 0 0 6px 0;
+                    letter-spacing: 0.5px;
+                }
+                .user-role-text {
+                    color: #7B8394 !important;
+                    font-size: 0.75rem;
+                    font-weight: 600;
+                    margin: 0;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                }
+                .logout-arrow {
+                    color: #FFFFFF !important;
+                    font-size: 1.5rem;
+                    cursor: pointer;
+                    opacity: 0.6;
+                    transition: all 0.2s ease;
+                    padding: 6px 10px;
+                    border-radius: 6px;
+                }
+                .logout-arrow:hover {
+                    opacity: 1;
+                    background: rgba(0,71,171,0.2);
+                    transform: translateX(-3px);
+                }
                 </style>
             """, unsafe_allow_html=True)
             
-            col_user, col_logout = st.columns([4, 1])
-            with col_user:
-                st.markdown(f"""
-                    <div class="user-card">
-                        <div class="user-role">{perfil_label}</div>
-                        <div class="user-name">{st.session_state.nome_usuario}</div>
+            perfil_texto = {"ADM": "🔑 Administrador", "CLIENTE": "🏪 Cliente", "FORNECEDOR": "🚚 Fornecedor"}.get(perfil, "👤 Usuário")
+            
+            # Caixa única com informações e seta
+            st.markdown(f"""
+                <div class="user-box">
+                    <div class="user-details">
+                        <p class="user-role-text">{perfil_texto}</p>
+                        <p class="user-name-text">{st.session_state.nome_usuario}</p>
                     </div>
-                """, unsafe_allow_html=True)
-            with col_logout:
-                st.markdown('<div style="margin-top: 18px;"></div>', unsafe_allow_html=True)
-                st.markdown("""
-                    <style>
-                    button[key="btn_logout_top"] p {
-                        font-size: 2rem !important;
-                    }
-                    </style>
-                """, unsafe_allow_html=True)
-                if st.button("↵", key="btn_logout_top"):
-                    st.session_state.logado = False
-                    st.rerun()
+                    <div class="logout-arrow">↩</div>
+                </div>
+            """, unsafe_allow_html=True)
             
             st.markdown("---")
 
@@ -1808,8 +1797,8 @@ class AppClientePrime:
                     # Preencher fornecedor baseado no modo de envio
                     if 'fornecedor' in df_final.columns:
                         if modo_envio == "Todos os Fornecedores":
-                            # Remove a coluna fornecedor para não mostrar na tabela
-                            df_final = df_final.drop(columns=['fornecedor'])
+                            # Preenche com o fornecedor pré-definido (da consulta) para cada item
+                            df_final['fornecedor'] = df_final['fornecedor'].fillna(lista_fornecedores[0] if lista_fornecedores else '')
                         else:
                             # Pré Definido ou Específicos: mantém o fornecedor original
                             df_final['fornecedor'] = df_final['fornecedor'].fillna(lista_fornecedores[0] if lista_fornecedores else '')
@@ -1890,6 +1879,9 @@ class AppClientePrime:
                                 else:
                                     cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
                                     enviados = 0
+                                    # Gerar idcobertura único para este envio
+                                    import uuid
+                                    idcobertura = str(uuid.uuid4())[:8].upper()
                                     
                                     with st.spinner("Enviando pedidos..."):
                                         if modo_envio == "Todos os Fornecedores":
@@ -1905,7 +1897,7 @@ class AppClientePrime:
                                                 if not df_forn.empty:
                                                     try:
                                                         df_forn['Qtd Compra'] = df_forn['reposicao']
-                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn)
+                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn, idcobertura)
                                                         enviados += 1
                                                     except Exception as e:
                                                         st.error(f"Erro ao enviar para {forn}: {e}")
@@ -1920,7 +1912,7 @@ class AppClientePrime:
                                                     
                                                     if not df_forn.empty:
                                                         df_forn['Qtd Compra'] = df_forn['reposicao']
-                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn)
+                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn, idcobertura)
                                                         enviados += 1
                                                 except Exception as e:
                                                     st.error(f"Erro ao enviar para {forn}: {e}")
@@ -1931,7 +1923,7 @@ class AppClientePrime:
                                         st.session_state.df_analise_cache = pd.DataFrame()
                                         st.rerun()
             
-            elif 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty and filtros_anteriores is not None:
+            elif 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty:
                 st.warning("Nenhum item encontrado com os filtros selecionados.")
 
     def tela_analise_retorno(self):
@@ -2025,7 +2017,7 @@ class AppClientePrime:
             c_forn.markdown('<div class="header-title">Fornecedores</div>', unsafe_allow_html=True)
             c_qtd.markdown('<div class="header-title">Qtd Itens</div>', unsafe_allow_html=True)
             c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
-            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title" style="text-align: center;">Ação</div>', unsafe_allow_html=True)
             
             for _, row in df_solicitacoes.iterrows():
                 grupo = str(row['grupo_pedido'])
@@ -2254,14 +2246,6 @@ class AppClientePrime:
 
 @st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
-    st.markdown("""
-        <style>
-        div[data-testid="stDialog"] * {
-            color: #FFFFFF !important;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
     
     if perfil in ("ADM", "CLIENTE"):
