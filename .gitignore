@@ -18,3 +18,4 @@ creds.json
 *.log
 *.csv
 *.xlsx
+/backup
