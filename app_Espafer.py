@@ -728,16 +728,22 @@ class AppClientePrime:
         self.db = DatabaseManager()
         self.inicializar_estado()
         self.aplicar_estilos()
+    
+    def _get_base64_image(self, image_path):
+        """Converte imagem para base64 para uso em CSS"""
+        import base64
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
 
     def inicializar_estado(self):
         perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
         menu_default = "Pedidos" if perfil == "FORNECEDOR" else "Gerar Cobertura"
         if 'menu_ativo' not in st.session_state: st.session_state.menu_ativo = menu_default
-        if 'dados_orcamento' not in st.session_state: st.session_state.dados_orcamento = None
         if 'modo_analise_atual' not in st.session_state: st.session_state.modo_analise_atual = "COMPRA"
         if 'tentativas_login' not in st.session_state: st.session_state.tentativas_login = 0
         if 'perfil_usuario' not in st.session_state: st.session_state.perfil_usuario = "CLIENTE"
         if 'db_fornecedores' not in st.session_state: st.session_state.db_fornecedores = {}
+        if 'itens_removidos' not in st.session_state: st.session_state.itens_removidos = []
 
     def aplicar_estilos(self):
         
@@ -838,6 +844,18 @@ class AppClientePrime:
                 border-color: #0047AB;     /* Borda azul ao passar o mouse */
                 box-shadow: 0 4px 8px rgba(0,0,0,0.05);
             }
+            
+            /* --- BOTÃO DE LOGOUT (SETA) --- */
+            section[data-testid="stSidebar"] button[key="btn_logout_top"] {
+                font-size: 3rem !important;
+                padding: 0 !important;
+                line-height: 1 !important;
+                min-width: 50px !important;
+                height: 50px !important;
+            }
+            section[data-testid="stSidebar"] div.stButton > button[key="btn_logout_top"] {
+                font-size: 3rem !important;
+            }
                     
             </style>
         """, unsafe_allow_html=True)
@@ -846,22 +864,65 @@ class AppClientePrime:
         perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
         with st.sidebar:
             # Logo e Usuário no topo
-            st.markdown(
-                '<div style="padding:10px 0px;">' 
-                '<h1 style="color:#0047AB !important; font-weight:900; margin-bottom: 8px; text-align: center;">ESPAFER</h1>',
-                unsafe_allow_html=True
-            )
-            
-            # Usuário e Logout logo abaixo da logo
-            perfil_label = {"ADM": "🔑", "CLIENTE": "🏪", "FORNECEDOR": "🚚"}.get(perfil, "👤")
-            col_user, col_logout = st.columns([3.5, 1])
-            with col_user:
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), 'imagens', 'LOGO-ESPAFER.png')
+            if os.path.exists(logo_path):
+                st.image(logo_path, use_container_width=True)
+            else:
                 st.markdown(
-                    f'<div style="color: #FFFFFF; font-size: 0.95rem; padding-top: 6px; font-weight: 500;">{perfil_label} {st.session_state.nome_usuario}</div>',
+                    '<div style="padding:10px 0px;">' 
+                    '<h1 style="color:#0047AB !important; font-weight:900; margin-bottom: 8px; text-align: center;">ESPAFER</h1>',
                     unsafe_allow_html=True
                 )
+            
+            # Usuário e Logout - Design Profissional
+            perfil_label = {"ADM": "🔑 Administrador", "CLIENTE": "🏪 Cliente", "FORNECEDOR": "🚚 Fornecedor"}.get(perfil, "👤 Usuário")
+            
+            st.markdown("""
+                <style>
+                    .user-card {
+                        background: linear-gradient(135deg, rgba(0, 71, 171, 0.1) 0%, rgba(0, 0, 0, 0.05) 100%);
+                        border-radius: 12px;
+                        padding: 12px 16px;
+                        margin: 10px 0px 15px 0px;
+                        border-left: 4px solid #0047AB;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }
+                    .user-role {
+                        color: #0047AB;
+                        font-size: 0.75rem;
+                        font-weight: 600;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        margin-bottom: 4px;
+                    }
+                    .user-name {
+                        color: #FFFFFF;
+                        font-size: 1rem;
+                        font-weight: 700;
+                        margin: 0;
+                    }
+                </style>
+            """, unsafe_allow_html=True)
+            
+            col_user, col_logout = st.columns([4, 1])
+            with col_user:
+                st.markdown(f"""
+                    <div class="user-card">
+                        <div class="user-role">{perfil_label}</div>
+                        <div class="user-name">{st.session_state.nome_usuario}</div>
+                    </div>
+                """, unsafe_allow_html=True)
             with col_logout:
-                if st.button("➜", key="btn_logout_top", help="Sair"):
+                st.markdown('<div style="margin-top: 18px;"></div>', unsafe_allow_html=True)
+                st.markdown("""
+                    <style>
+                    button[key="btn_logout_top"] p {
+                        font-size: 2rem !important;
+                    }
+                    </style>
+                """, unsafe_allow_html=True)
+                if st.button("↵", key="btn_logout_top"):
                     st.session_state.logado = False
                     st.rerun()
             
@@ -870,7 +931,7 @@ class AppClientePrime:
             # ── MENUS POR PERFIL ──────────────────────────────────────
             if perfil in ("ADM", "CLIENTE"):
                 with st.expander("PEDIDO DE COMPRA", expanded=True):
-                    opcoes = ["Gerar Cobertura", "Gerar Orçamento", "Inteligência de Compra"]
+                    opcoes = ["Gerar Cobertura", "Inteligência de Compra"]
                     for opt in opcoes:
                         tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
                         if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
@@ -1575,6 +1636,12 @@ class AppClientePrime:
             <style>
                 [data-baseweb="select"] * { color: #000000 !important; -webkit-text-fill-color: #000000 !important; }
                 .align-btn { margin-top: 28px; }
+                [data-testid="stMarkdownContainer"] h3 { color: #000000 !important; }
+                [data-testid="stWidgetLabel"] { color: #000000 !important; }
+                /* Exceção para multiselect de fornecedores */
+                div[data-testid="stMultiSelect"] [data-baseweb="select"] {
+                    background-color: #F8F9FA !important;
+                }
             </style>
         """, unsafe_allow_html=True)
 
@@ -1632,26 +1699,39 @@ class AppClientePrime:
                 modo_db = 'SOBRA'
 
             # --- BOTÃO GERAR ANÁLISE ---
+            # Detectar mudanças nos filtros
+            filtros_atuais = (v_filial, v_marca, v_grupo, v_subgrupo, v_subgrupo1, v_produto, dias_alvo, dias_corte, modo_db, incluir_sem_venda)
+            filtros_anteriores = st.session_state.get('filtros_anteriores', None)
+            
+            gerar_analise = False
             with c_btn:
                 st.markdown('<div class="align-btn"></div>', unsafe_allow_html=True)
                 if st.button("GERAR ANÁLISE", type="primary", use_container_width=True):
-                    with st.spinner("Processando..."):
-                        df = self.db.consultar_cobertura(
-                            v_filial, v_marca, v_grupo, v_subgrupo, v_subgrupo1, v_produto, 
-                            dias_alvo, dias_corte, modo_db
-                        )
+                    gerar_analise = True
+            
+            # Atualização automática se filtros mudaram
+            if filtros_anteriores != filtros_atuais and filtros_anteriores is not None:
+                gerar_analise = True
+            
+            if gerar_analise:
+                with st.spinner("Processando..."):
+                    df = self.db.consultar_cobertura(
+                        v_filial, v_marca, v_grupo, v_subgrupo, v_subgrupo1, v_produto, 
+                        dias_alvo, dias_corte, modo_db
+                    )
 
-                        # --- LÓGICA DE FILTRO DE VENDAS ---
-                        if not df.empty:
-                            # Se NÃO marcar "incluir não vendidos", removemos itens com venda_periodo <= 0
-                            if not incluir_sem_venda:
-                                df = df[df['venda_periodo'] > 0]
+                    # --- LÓGICA DE FILTRO DE VENDAS ---
+                    if not df.empty:
+                        # Se NÃO marcar "incluir não vendidos", removemos itens com venda_periodo <= 0
+                        if not incluir_sem_venda:
+                            df = df[df['venda_periodo'] > 0]
 
-                        st.session_state.df_analise_cache = df
-                        st.session_state.modo_analise_atual = modo_db
-                        if len(df) == 2000:
-                            st.warning("⚠️ O resultado foi limitado a 2.000 itens. Aplique filtros mais específicos para ver todos os dados.")
-                        st.rerun()
+                    st.session_state.df_analise_cache = df
+                    st.session_state.modo_analise_atual = modo_db
+                    st.session_state.filtros_anteriores = filtros_atuais
+                    if len(df) == 2000:
+                        st.warning("⚠️ O resultado foi limitado a 2.000 itens. Aplique filtros mais específicos para ver todos os dados.")
+                    st.rerun()
 
             # --- PROCESSAMENTO DOS DADOS PARA EXIBIÇÃO ---
             df_cache = st.session_state.get('df_analise_cache', pd.DataFrame())
@@ -1683,30 +1763,10 @@ class AppClientePrime:
                 outras_colunas = [c for c in df_processado.columns if c not in colunas_finais]
                 df_final = df_processado[colunas_finais + outras_colunas]
 
-                # 3. ESTILIZAÇÃO
-                def aplicar_cores_e_formatos(styler):
-                    if modo_atual == 'SOBRA':
-                        styler.background_gradient(cmap='Reds', subset=['dias_estoque'])
-                    else:
-                        styler.background_gradient(cmap='Reds_r', subset=['dias_estoque'], vmin=0, vmax=30)
-                        if 'reposicao' in df_final.columns:
-                            styler.background_gradient(cmap='Blues', subset=['reposicao'], vmin=0, vmax=100)
-
-                    formatos = {'estoque': '{:.0f} und', f'venda({dias_alvo}D)': '{:.0f} und', 'dias_estoque': '{:.1f} dias'}
-                    if 'reposicao' in df_final.columns and modo_atual != 'SOBRA':
-                        formatos['reposicao'] = '{:.0f} und'
-                    return styler.format(formatos)
-
-                st.dataframe(
-                    aplicar_cores_e_formatos(df_final.style),
-                    use_container_width=True, hide_index=True, height=600,
-                    column_config={"grupo": None, "subgrupo": None, "subgrupo1": None, "nome_empresa_completo": None}
-                )
-
                 # --- RODAPÉ (AÇÕES) ---
-                col_espaco, col_acao = st.columns([3, 2])
-                with col_acao:
-                    if modo_atual == 'SOBRA':
+                if modo_atual == 'SOBRA':
+                    col_espaco, col_acao = st.columns([3, 2])
+                    with col_acao:
                         pdf_bytes = self.gerar_pdf_sobra(df_final, dias_corte, dias_alvo)
                         st.download_button(
                             label="📄 Baixar PDF de Sobras",
@@ -1716,31 +1776,162 @@ class AppClientePrime:
                             type="primary",
                             use_container_width=True
                         )
+                else:
+                    # FILTRO DE FORNECEDORES
+                    st.markdown('<h3 style="color:#000000;">Enviar para Fornecedores</h3>', unsafe_allow_html=True)
+                                    
+                    df_forn_db = self.db.buscar_fornecedores()
+                    lista_fornecedores = sorted(df_forn_db['fornecedor'].unique().tolist()) if not df_forn_db.empty else []
                     
-                    else:
-                        if st.button("➕ Adicionar TODOS ao Orçamento", type="primary", use_container_width=True):
-                            df_orc = df_final.copy()
-                            if 'reposicao' in df_orc.columns:
-                                df_orc['Qtd Compra'] = df_orc['reposicao']
+                    col_modo, col_selecao = st.columns([1, 2], vertical_alignment="bottom")
+                    with col_modo:
+                        modo_envio = st.selectbox("Modo de Envio:", ["Pré Definido", "Todos os Fornecedores", "Fornecedores Específicos"], key="modo_envio_cobertura")
+                    
+                    fornecedores_selecionados = []
+                    if modo_envio == "Fornecedores Específicos":
+                        with col_selecao:
+                            st.markdown("""
+                                <style>
+                                    div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                                        background-color: #F8F9FA !important;
+                                    }
+                                </style>
+                            """, unsafe_allow_html=True)
+                            fornecedores_selecionados = st.multiselect("Selecione os Fornecedores:", lista_fornecedores, key="fornecedores_especificos")
+                    elif modo_envio == "Todos os Fornecedores":
+                        st.info("📌 Modo 'Todos': Cada item será enviado para TODOS os fornecedores que vendem sua marca.")
+                    
+                    # Adicionar coluna de remoção e preparar dados
+                    if 'remover' not in df_final.columns:
+                        df_final.insert(0, 'remover', False)
+                    
+                    # Preencher fornecedor baseado no modo de envio
+                    if 'fornecedor' in df_final.columns:
+                        if modo_envio == "Todos os Fornecedores":
+                            # Remove a coluna fornecedor para não mostrar na tabela
+                            df_final = df_final.drop(columns=['fornecedor'])
+                        else:
+                            # Pré Definido ou Específicos: mantém o fornecedor original
+                            df_final['fornecedor'] = df_final['fornecedor'].fillna(lista_fornecedores[0] if lista_fornecedores else '')
+                    
+                    # Aplicar itens removidos anteriormente
+                    itens_removidos = st.session_state.get('itens_removidos', [])
+                    if itens_removidos:
+                        df_final = df_final[~df_final['idproduto'].isin(itens_removidos)]
+                    
+                    # Botão de Rollback (só aparece se houver itens removidos)
+                    if itens_removidos:
+                        col_rollback, _ = st.columns([1, 3])
+                        with col_rollback:
+                            if st.button("↩️ Desfazer Última Remoção"):
+                                itens_removidos.pop()
+                                st.session_state.itens_removidos = itens_removidos
+                                st.rerun()
+                    
+                    # Tabela editável com cores
+                    styled_df = df_final.style
+                    if 'dias_estoque' in df_final.columns:
+                        styled_df = styled_df.background_gradient(cmap='Reds_r', subset=['dias_estoque'], vmin=0, vmax=30)
+                    if 'reposicao' in df_final.columns:
+                        styled_df = styled_df.background_gradient(cmap='Blues', subset=['reposicao'], vmin=0, vmax=100)
+                    
+                    df_editado = st.data_editor(
+                        styled_df,
+                        column_config={
+                            "remover": st.column_config.CheckboxColumn("Remover Item", help="Marque para remover", default=False),
+                            "filial": st.column_config.TextColumn("Filial", disabled=True),
+                            "idproduto": st.column_config.TextColumn("Código", disabled=True),
+                            "produto": st.column_config.TextColumn("Produto", disabled=True, width="medium"),
+                            "marca": st.column_config.TextColumn("Marca", disabled=True),
+                            "estoque": st.column_config.NumberColumn("Estoque", disabled=True, format="%.0f und"),
+                            f"venda({dias_alvo}D)": st.column_config.NumberColumn(f"Venda({dias_alvo}D)", disabled=True, format="%.0f und"),
+                            "dias_estoque": st.column_config.NumberColumn("Dias Estoque", disabled=True, format="%.1f dias"),
+                            "reposicao": st.column_config.NumberColumn("✏️ Reposição", format="%.0f und"),
+                            "fornecedor": st.column_config.SelectboxColumn("✏️ Fornecedor", options=lista_fornecedores, required=True),
+                            "grupo": None, "subgrupo": None, "subgrupo1": None
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        height=500,
+                        key="editor_cobertura"
+                    )
+                    
+                    # Processar remoções
+                    itens_para_remover = df_editado[df_editado['remover'] == True]['idproduto'].tolist()
+                    if itens_para_remover:
+                        for item in itens_para_remover:
+                            if item not in itens_removidos:
+                                itens_removidos.append(item)
+                        st.session_state.itens_removidos = itens_removidos
+                        st.rerun()
+                    
+                    # Botão de Envio
+                    col_btn, _ = st.columns([1, 3])
+                    with col_btn:
+                        if st.button("📋 ENVIAR PEDIDOS", type="primary", use_container_width=True):
+                            df_envio = df_editado[df_editado['remover'] == False].copy()
                             
-                            # Correção aqui: adaptando os nomes das colunas para os novos filtros
-                            cols_para_orc = ['idproduto', 'produto', 'estoque', 'marca', 'grupo', 'subgrupo', f'venda({dias_alvo}D)', 'dias_estoque', 'Qtd Compra']
-                            existentes_orc = [c for c in cols_para_orc if c in df_orc.columns]
-                            
-                            df_final_orc = df_orc[existentes_orc].copy()
-                            df_final_orc['Fornecedor'] = None
-
-                            if st.session_state.dados_orcamento is None or st.session_state.dados_orcamento.empty:
-                                st.session_state.dados_orcamento = df_final_orc
+                            if df_envio.empty:
+                                st.warning("Nenhum item para enviar.")
                             else:
-                                st.session_state.dados_orcamento = pd.concat([st.session_state.dados_orcamento, df_final_orc], ignore_index=True)
-                                st.session_state.dados_orcamento.drop_duplicates(subset=['idproduto'], keep='last', inplace=True)
-
-                            st.success(f"{len(df_final_orc)} itens adicionados!")
-                            st.session_state.menu_ativo = "Gerar Orçamento"
-                            st.rerun()
+                                # Determinar fornecedores baseado no modo
+                                if modo_envio == "Pré Definido":
+                                    # Usa o fornecedor definido na coluna de cada item
+                                    fornecedores_destino = df_envio['fornecedor'].unique().tolist()
+                                elif modo_envio == "Todos os Fornecedores":
+                                    # Envia para todos os fornecedores que vendem a marca do item
+                                    fornecedores_destino = lista_fornecedores
+                                else:
+                                    # Fornecedores Específicos
+                                    fornecedores_destino = fornecedores_selecionados
+                                
+                                if not fornecedores_destino:
+                                    st.warning("Selecione pelo menos um fornecedor.")
+                                else:
+                                    cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
+                                    enviados = 0
+                                    
+                                    with st.spinner("Enviando pedidos..."):
+                                        if modo_envio == "Todos os Fornecedores":
+                                            # Para cada fornecedor, envia apenas os itens que ele vende
+                                            for forn in fornecedores_destino:
+                                                # Filtrar itens que o fornecedor vende (baseado na marca)
+                                                df_forn = df_envio.copy()
+                                                # Buscar marcas do fornecedor
+                                                marcas_forn = df_forn_db[df_forn_db['fornecedor'] == forn]['marca'].str.upper().tolist()
+                                                if marcas_forn:
+                                                    df_forn = df_forn[df_forn['marca'].str.upper().isin(marcas_forn)]
+                                                
+                                                if not df_forn.empty:
+                                                    try:
+                                                        df_forn['Qtd Compra'] = df_forn['reposicao']
+                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn)
+                                                        enviados += 1
+                                                    except Exception as e:
+                                                        st.error(f"Erro ao enviar para {forn}: {e}")
+                                        else:
+                                            # Pré Definido ou Específicos
+                                            for forn in fornecedores_destino:
+                                                try:
+                                                    if modo_envio == "Pré Definido":
+                                                        df_forn = df_envio[df_envio['fornecedor'] == forn].copy()
+                                                    else:
+                                                        df_forn = df_envio.copy()
+                                                    
+                                                    if not df_forn.empty:
+                                                        df_forn['Qtd Compra'] = df_forn['reposicao']
+                                                        numero = self.db.criar_pedido(cliente_nome, forn, df_forn)
+                                                        enviados += 1
+                                                except Exception as e:
+                                                    st.error(f"Erro ao enviar para {forn}: {e}")
+                                    
+                                    if enviados:
+                                        st.success(f"✅ {enviados} pedido(s) enviado(s)!")
+                                        st.session_state.itens_removidos = []
+                                        st.session_state.df_analise_cache = pd.DataFrame()
+                                        st.rerun()
             
-            elif 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty:
+            elif 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty and filtros_anteriores is not None:
                 st.warning("Nenhum item encontrado com os filtros selecionados.")
 
     def tela_analise_retorno(self):
@@ -2063,6 +2254,14 @@ class AppClientePrime:
 
 @st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
+    st.markdown("""
+        <style>
+        div[data-testid="stDialog"] * {
+            color: #FFFFFF !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
     
     if perfil in ("ADM", "CLIENTE"):
@@ -2073,8 +2272,8 @@ Este manual detalha o funcionamento de cada etapa do processo de suprimentos.
 
 ---
 
-### 1️⃣ Gerar Cobertura (Análise de Necessidade)
-Identifica **o quê**, **quanto** e **onde** comprar.
+### 1️⃣ Gerar Cobertura (Análise e Envio de Pedidos)
+Identifica **o quê**, **quanto** e **onde** comprar, e envia diretamente aos fornecedores.
 
 **Funcionalidades:**
 * **Análise de Giro:** Calcula a velocidade de venda de cada item por filial
@@ -2084,59 +2283,68 @@ Identifica **o quê**, **quanto** e **onde** comprar.
   - **Sugestão de Compra:** Identifica itens com estoque baixo
   - **Análise de Sobra:** Identifica itens com excesso de estoque
 
-**Como usar:**
+**Como usar - Sugestão de Compra:**
 1. Selecione os filtros desejados (filial, marca, grupo, etc.)
-2. Escolha o tipo de análise
-3. Configure os parâmetros (dias de cobertura)
+2. Escolha "Sugestão de Compra"
+3. Configure os parâmetros (dias de cobertura alvo e estoque mínimo)
 4. Clique em "GERAR ANÁLISE"
-5. Revise os resultados e adicione ao orçamento
+5. **Escolha o modo de envio:**
+   - **Todos os Fornecedores:** Envia para todos cadastrados
+   - **Fornecedores Específicos:** Selecione quais receberão o pedido
+6. **Edite a tabela:**
+   - ✏️ **Reposição:** Ajuste a quantidade a comprar
+   - ✏️ **Fornecedor:** Escolha o fornecedor para cada item
+   - **Remover:** Marque itens que não deseja incluir
+7. Use o botão **"↩️ Desfazer Última Remoção"** se excluir algo por engano
+8. Clique em **"📋 ENVIAR PEDIDOS"** para criar os pedidos automaticamente
+
+**Como usar - Análise de Sobra:**
+1. Selecione os filtros desejados
+2. Escolha "Análise de Sobra"
+3. Configure o estoque máximo (dias)
+4. Marque "Incluir não vendidos?" se desejar ver itens sem movimento
+5. Clique em "GERAR ANÁLISE"
+6. Baixe o PDF com o relatório de sobras
 
 ---
 
-### 2️⃣ Gerar Orçamento (Preparação de Pedidos)
-Organiza e distribui os itens para cotação com fornecedores.
-
-**Funcionalidades:**
-* **Atribuição Automática:** Sistema sugere fornecedor baseado na marca do produto
-* **Atribuição Manual:** Você pode escolher fornecedor específico
-* **Edição de Quantidades:** Ajuste as quantidades antes de enviar
-* **Filtros e Busca:** Localize produtos rapidamente
-
-**Como usar:**
-1. Os itens vêm da tela "Gerar Cobertura"
-2. Revise os fornecedores sugeridos (coluna editável)
-3. Ajuste as quantidades se necessário
-4. Clique em "REGISTRAR PEDIDO AO FORNECEDOR"
-5. O sistema cria pedidos separados por fornecedor automaticamente
-
----
-
-### 3️⃣ Inteligência de Compra (Análise Comparativa)
+### 2️⃣ Inteligência de Compra (Análise Comparativa)
 Compara cotações e identifica a melhor opção de compra.
 
 **Funcionalidades:**
-* **Upload de Cotações:** Envie planilhas dos fornecedores (.xlsx)
+* **Visualização de Cotações:** Veja pedidos respondidos pelos fornecedores
 * **Comparativo Automático:** Sistema destaca o melhor preço
 * **Três Estratégias de Fechamento:**
-  - **Menor Preço:** Escolhe o fornecedor mais barato por item
+  - **Menor Custo:** Escolhe o fornecedor mais barato por item
   - **Fornecedor Único:** Concentra compra em um fornecedor
-  - **Menor Entrega:** Prioriza o prazo de entrega mais rápido
+  - **Menor Prazo:** Prioriza o prazo de entrega mais rápido
 * **Geração de PDF:** Crie pedidos formatados para envio
+* **Envio Direto:** Confirme pedidos diretamente pelo sistema
 
 **Como usar:**
-1. Faça upload das planilhas de cotação dos fornecedores
-2. O sistema identifica automaticamente cada fornecedor pelo nome do arquivo
-3. Escolha a estratégia de fechamento
-4. Revise os pedidos gerados
-5. Baixe os PDFs para envio aos fornecedores
+1. Acesse a tela "Inteligência de Compra"
+2. Visualize as solicitações com cotações respondidas
+3. Clique em "Analisar" na solicitação desejada
+4. Escolha a estratégia de fechamento
+5. Revise os pedidos gerados por fornecedor
+6. Use a busca para localizar produtos específicos
+7. Baixe os PDFs ou clique em "✅ Enviar Pedido" para confirmar
 
 ---
 
 ### 💡 Dicas Importantes
-* Mantenha os nomes dos arquivos de cotação com o nome do fornecedor
-* Use os filtros para análises mais precisas
-* Revise sempre as quantidades antes de registrar pedidos
-* O sistema salva automaticamente suas edições
+* **Remoção de Itens:** Use o checkbox "Remover" e desfaça com o botão de rollback
+* **Edição Direta:** Todos os campos marcados com ✏️ são editáveis
+* **Filtros:** Use filtros específicos para análises mais precisas
+* **Modo de Envio:** Escolha "Específicos" para enviar apenas para alguns fornecedores
+* **Rollback:** O botão desfaz remoções uma por uma (última removida primeiro)
+
+---
+
+### ⚠️ Observações
+* O sistema cria pedidos separados automaticamente por fornecedor
+* Após enviar, os pedidos ficam disponíveis para os fornecedores responderem
+* Você pode acompanhar as respostas em "Inteligência de Compra"
 
 ---
 *Você pode fechar esta janela clicando no 'X' ou fora da caixa.*
@@ -2311,6 +2519,12 @@ def verificar_login():
                         st.session_state.perfil_usuario = dados_usuario[2]   # ADM / CLIENTE / FORNECEDOR
                         st.session_state.tentativas_login = 0
                         st.session_state.bloqueado_ate  = None
+                        
+                        # Limpar cache de análises e filtros ao fazer login
+                        st.session_state.df_analise_cache = pd.DataFrame()
+                        st.session_state.filtros_anteriores = None
+                        st.session_state.itens_removidos = []
+                        
                         # Define menu inicial conforme perfil
                         if dados_usuario[2] == "FORNECEDOR":
                             st.session_state.menu_ativo = "Orçamento"
@@ -2366,14 +2580,12 @@ if __name__ == "__main__":
         else:
             st.warning("Você não tem permissão para acessar esta área.")
 
-    elif menu in ("Gerar Cobertura", "Gerar Orçamento", "Inteligência de Compra"):
+    elif menu in ("Gerar Cobertura", "Inteligência de Compra"):
         if perfil not in ("ADM", "CLIENTE"):
             st.warning("Você não tem permissão para acessar esta área.")
             st.stop()
         if menu == "Gerar Cobertura":
             app.tela_cobertura()
-        elif menu == "Gerar Orçamento":
-            app.tela_orcamento()
         elif menu == "Inteligência de Compra":
             app.tela_analise_retorno()
 
