@@ -2,17 +2,11 @@ import bcrypt
 import streamlit as st
 import pandas as pd
 import psycopg2
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 from fpdf import FPDF
-import io
 import datetime
 import logging
 from logging.handlers import RotatingFileHandler
 import re
-from typing import List
 
 # ==================== CONFIGURAÇÃO DE LOGGING COM ROTAÇÃO ====================
 # Máximo de 5MB por arquivo, mantém 3 backups — evita crescimento ilimitado
@@ -24,38 +18,16 @@ _log_handler_stream.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(l
 logging.basicConfig(level=logging.INFO, handlers=[_log_handler_file, _log_handler_stream])
 logger = logging.getLogger(__name__)
 
-# ==================== UTILITÁRIO: mascarar e-mail para log ====================
-def _mascarar_email(email: str) -> str:
-    """Retorna e-mail parcialmente mascarado para uso em logs (ex: na***@dominio.com)."""
-    try:
-        usuario, dominio = email.split('@', 1)
-        visivel = usuario[:2] if len(usuario) > 2 else usuario[0]
-        return f"{visivel}***@{dominio}"
-    except Exception:
-        return "***"
-
 # 1. Configuração de Página
-st.set_page_config(page_title="Rede Espafer", layout="wide")
+st.set_page_config(page_title="Espafer", layout="wide")
 
 # ==================== CONSTANTES ====================
-BLACKLIST_FILIAIS = set()
+# (Removido BLACKLIST_FILIAIS - não utilizado)
 
 # ==================== FUNÇÕES AUXILIARES ====================
-def validar_periodo_datas(data_inicial, data_final, max_dias=365):
-    """Valida período entre datas."""
-    if data_inicial > data_final:
-        raise ValueError("Data inicial não pode ser maior que data final")
-    
-    diferenca = (data_final - data_inicial).days
-    if diferenca > max_dias:
-        raise ValueError(f"Período não pode exceder {max_dias} dias")
-    
-    return True
+# (Removido validar_periodo_datas - não utilizado)
 
-
-# --- CLASSE PARA GERAR O PDF ---
 class PDF(FPDF):
-    # Adicionado parâmetro 'info_extra'
     def __init__(self, titulo="SOLICITAÇÃO DE COTAÇÃO", subtitulo="Departamento de Compras", fornecedor=None, info_extra=None):
         super().__init__()
         self.titulo_rel = titulo
@@ -132,13 +104,8 @@ class DatabaseManager:
             self.creds = st.secrets["postgres"]
             logger.info("DatabaseManager inicializado com sucesso")
 
-    def get_blacklist(self) -> set:
-        """Retorna conjunto de filiais bloqueadas."""
-        return BLACKLIST_FILIAIS
-
     def _get_connection(self):
         """Cria conexão com o banco de dados."""
-        #password = urllib.parse.quote_plus(self.creds.get("password"))
         try:
             return psycopg2.connect(
                 host=self.creds.get("host"),
@@ -165,7 +132,7 @@ class DatabaseManager:
         senha_digitada = str(senha).strip()
         senha_bytes = senha_digitada.encode('utf-8')
 
-        query = "SELECT usuario, nome, senha FROM usuarios_sistema WHERE LOWER(usuario) = LOWER(%s) AND ativo = TRUE"
+        query = "SELECT usuario, nome, senha, perfil FROM usuarios_sistema WHERE LOWER(usuario) = LOWER(%s) AND ativo = TRUE"
 
         conn = None
         try:
@@ -173,7 +140,6 @@ class DatabaseManager:
             if not conn:
                 return None
             cursor = conn.cursor()
-            
             cursor.execute(query, (usuario_limpo,))
             res = cursor.fetchone()
 
@@ -181,8 +147,9 @@ class DatabaseManager:
                 cursor.close()
                 return None
 
-            usuario_bd, nome_bd, senha_bd = res
-            senha_bd = str(senha_bd).strip()
+            usuario_bd, nome_bd, senha_bd, perfil_bd = res
+            senha_bd  = str(senha_bd).strip()
+            perfil_bd = str(perfil_bd).strip().upper() if perfil_bd else "CLIENTE"
             autenticado = False
 
             if senha_bd.startswith('$2b$') or senha_bd.startswith('$2a$'):
@@ -191,11 +158,8 @@ class DatabaseManager:
                 except Exception:
                     autenticado = False
             else:
-                # --- Senha ainda em texto puro: compara diretamente ---
                 autenticado = (senha_digitada == senha_bd)
-
                 if autenticado:
-                    # Migracao automatica: salva o hash bcrypt no banco
                     try:
                         novo_hash = bcrypt.hashpw(senha_bytes, bcrypt.gensalt()).decode('utf-8')
                         cursor.execute(
@@ -203,29 +167,193 @@ class DatabaseManager:
                             (novo_hash, usuario_limpo)
                         )
                         conn.commit()
-                        logger.info(f"Senha do usuario migrada para bcrypt com sucesso.")
+                        logger.info("Senha do usuario migrada para bcrypt com sucesso.")
                     except Exception as e:
-                        logger.warning(f"Nao foi possivel migrar a senha para bcrypt: {e}")
+                        logger.warning(f"Nao foi possivel migrar a senha: {e}")
 
             cursor.close()
-            return (usuario_bd, nome_bd) if autenticado else None
+            return (usuario_bd, nome_bd, perfil_bd) if autenticado else None
 
         except Exception as e:
             logger.error(f"Erro ao acessar tabela de usuarios: {e}")
-            st.error(f"Erro ao verificar credenciais. Tente novamente.")
+            st.error("Erro ao verificar credenciais. Tente novamente.")
             return None
         finally:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def _ordenar_naturalmente(self, lista):
-        """Função auxiliar para ordenar listas misturando números e textos corretamente."""
-        converter = lambda texto: int(texto) if texto.isdigit() else texto.lower()
-        chave_alfanumerica = lambda chave: [converter(c) for c in re.split(r'(\d+)', str(chave))]
-        return sorted(lista, key=chave_alfanumerica)
+    def buscar_pedidos_fornecedor(self, nome_fornecedor=None):
+        """Busca pedidos. Se nome_fornecedor informado, filtra por ele."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            # Usa fornecedor_nome (texto) diretamente — mais robusto que depender de id na tabela fornecedores
+            base = """
+                SELECT pv.id,
+                       pv.numero_pedido,
+                       pv.cliente_nome,
+                       pv.fornecedor_nome,
+                       pv.status,
+                       pv.data_criacao
+                FROM pedidos_vendas pv
+            """
+            if nome_fornecedor:
+                query = base + " WHERE LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
+                return pd.read_sql(query, conn, params=(nome_fornecedor,))
+            else:
+                query = base + " ORDER BY pv.data_criacao DESC"
+                return pd.read_sql(query, conn)
+        except Exception as e:
+            logger.error(f"Erro ao buscar pedidos: {e}")
+            return pd.DataFrame()
+        finally:
+            if conn: conn.close()
+
+    def buscar_itens_pedido(self, pedido_id):
+        """Busca os itens de um pedido específico."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            query = """
+                SELECT id, codigo_produto, nome_produto, quantidade,
+                       COALESCE(valor_unitario, 0)  AS valor_unitario,
+                       COALESCE(impostos, 0)         AS impostos,
+                       COALESCE(frete, 0)            AS frete,
+                       COALESCE(prazo_entrega, '')   AS prazo_entrega
+                FROM pedidos_itens
+                WHERE pedido_id = %s
+                ORDER BY id
+            """
+            return pd.read_sql(query, conn, params=(pedido_id,))
+        except Exception as e:
+            logger.error(f"Erro ao buscar itens do pedido {pedido_id}: {e}")
+            return pd.DataFrame()
+        finally:
+            if conn: conn.close()
+
+    def salvar_resposta_pedido(self, pedido_id, itens_df):
+        """Salva valores preenchidos pelo fornecedor e marca pedido como Enviado."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cur = conn.cursor()
+            for _, row in itens_df.iterrows():
+                cur.execute("""
+                    UPDATE pedidos_itens
+                       SET valor_unitario = %s,
+                           impostos       = %s,
+                           frete          = %s,
+                           prazo_entrega  = %s
+                     WHERE id = %s
+                """, (
+                    float(row.get('valor_unitario') or 0),
+                    float(row.get('impostos')       or 0),
+                    float(row.get('frete')          or 0),
+                    str(row.get('prazo_entrega')    or ''),
+                    int(row['id'])
+                ))
+            cur.execute("UPDATE pedidos_vendas SET status = 'Enviado' WHERE id = %s", (pedido_id,))
+            conn.commit()
+            cur.close()
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao salvar resposta pedido {pedido_id}: {e}")
+            if conn: conn.rollback()
+            return False
+        finally:
+            if conn: conn.close()
+
+    def criar_pedido(self, cliente_nome, fornecedor_nome, itens_df):
+        """Cria um pedido novo e insere os itens."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cur = conn.cursor()
     
-    def buscar_filiais(self) -> List[str]:
+            # 1. Gerar número do pedido (ex: PED-0001)
+            cur.execute("""
+                SELECT COALESCE(MAX(
+                    CAST(NULLIF(regexp_replace(numero_pedido,'[^0-9]','','g'),'') AS INTEGER)
+                ), 0) + 1 FROM pedidos_vendas
+            """)
+            proximo_numero = cur.fetchone()[0]
+            numero_pedido = f"PED-{proximo_numero:04d}"
+    
+            # 2. Buscar o id_fornecedor na tabela fornecedores
+            # Ajustado para usar 'id_fornecedor' conforme sua alteração de tabela anterior
+            id_fornecedor_bd = None
+            try:
+                cur.execute(
+                    "SELECT id_fornecedor FROM fornecedores WHERE LOWER(TRIM(fornecedor)) = LOWER(TRIM(%s)) LIMIT 1",
+                    (fornecedor_nome,)
+                )
+                row_forn = cur.fetchone()
+                if row_forn:
+                    id_fornecedor_bd = row_forn[0]
+            except Exception as e:
+                logger.warning(f"Não foi possível localizar ID para fornecedor {fornecedor_nome}: {e}")
+    
+            # 3. Verificar se a coluna fornecedor_nome existe (evita erro de transação)
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'pedidos_vendas' AND column_name = 'fornecedor_nome'
+            """)
+            tem_col_forn_nome = cur.fetchone() is not None
+    
+            # 4. Inserir o Cabeçalho do Pedido
+            if tem_col_forn_nome:
+                cur.execute("""
+                    INSERT INTO public.pedidos_vendas
+                        (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor, status, data_criacao)
+                    VALUES (%s, %s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
+                    RETURNING id
+                """, (numero_pedido, cliente_nome, fornecedor_nome, id_fornecedor_bd))
+            else:
+                cur.execute("""
+                    INSERT INTO public.pedidos_vendas
+                        (numero_pedido, cliente_nome, id_fornecedor, status, data_criacao)
+                    VALUES (%s, %s, %s, 'Pendente', CURRENT_TIMESTAMP)
+                    RETURNING id
+                """, (numero_pedido, cliente_nome, id_fornecedor_bd))
+    
+            pedido_id = cur.fetchone()[0]
+    
+            # 5. Inserir os Itens do Pedido
+            for _, row in itens_df.iterrows():
+                # Tenta pegar a quantidade de várias colunas possíveis
+                qtd = row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0
+                
+                # Limpeza de dados básica
+                cod_prod = str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0')
+                nome_prod = str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado')
+    
+                cur.execute("""
+                    INSERT INTO public.pedidos_itens
+                        (pedido_id, codigo_produto, nome_produto, quantidade,
+                         valor_unitario, impostos, frete, prazo_entrega)
+                    VALUES (%s, %s, %s, %s, NULL, NULL, NULL, NULL)
+                """, (
+                    pedido_id,
+                    cod_prod,
+                    nome_prod,
+                    float(qtd) if str(qtd).replace('.','').isdigit() else 0.0,
+                ))
+    
+            conn.commit()
+            cur.close()
+            logger.info(f"Sucesso: Pedido {numero_pedido} criado para {fornecedor_nome}")
+            return numero_pedido
+    
+        except Exception as e:
+            if conn:
+                conn.rollback() # CRITICAL: Destrava o banco para o próximo fornecedor do loop
+            logger.error(f"Erro fatal ao criar pedido para {fornecedor_nome}: {e}")
+            raise e 
+        finally:
+            if conn:
+                conn.close()
+
+    def buscar_filiais(self):
         if not self.creds: return []
         try:
             conn = self._get_connection()
@@ -321,19 +449,136 @@ class DatabaseManager:
             return df.iloc[:, 0].tolist() if not df.empty else []
         except: return []
 
+    def buscar_pedidos_respondidos(self, cliente_nome=None):
+        """Busca pedidos com status Enviado agrupados por número base."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            query = """
+                SELECT 
+                    REGEXP_REPLACE(numero_pedido, '-\\d+$', '') as grupo_pedido,
+                    COUNT(DISTINCT id) as qtd_fornecedores,
+                    MIN(data_criacao) as data_solicitacao,
+                    STRING_AGG(DISTINCT fornecedor_nome, ', ') as fornecedores,
+                    STRING_AGG(DISTINCT numero_pedido, ', ' ORDER BY numero_pedido) as numeros_pedidos
+                FROM pedidos_vendas
+                WHERE status = 'Enviado'
+            """
+            if cliente_nome:
+                query += " AND LOWER(cliente_nome) = LOWER(%s)"
+            query += " GROUP BY grupo_pedido ORDER BY MIN(data_criacao) DESC"
+            
+            if cliente_nome:
+                return pd.read_sql(query, conn, params=(cliente_nome,))
+            else:
+                return pd.read_sql(query, conn)
+        except Exception as e:
+            logger.error(f"Erro ao buscar pedidos respondidos: {e}")
+            return pd.DataFrame()
+        finally:
+            if conn: conn.close()
+
+    def buscar_detalhes_comparativo(self, grupo_pedido):
+        """Busca detalhes de todos os fornecedores de um grupo de pedidos."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            query = """
+                SELECT 
+                    pv.fornecedor_nome,
+                    pi.codigo_produto,
+                    pi.nome_produto,
+                    pi.quantidade,
+                    pi.valor_unitario,
+                    pi.impostos,
+                    pi.frete,
+                    pi.prazo_entrega
+                FROM pedidos_vendas pv
+                JOIN pedidos_itens pi ON pv.id = pi.pedido_id
+                WHERE REGEXP_REPLACE(pv.numero_pedido, '-\\d+$', '') = %s
+                  AND pv.status = 'Enviado'
+                  AND pi.valor_unitario > 0
+                ORDER BY pi.codigo_produto, pv.fornecedor_nome
+            """
+            return pd.read_sql(query, conn, params=(grupo_pedido,))
+        except Exception as e:
+            logger.error(f"Erro ao buscar detalhes comparativo: {e}")
+            return pd.DataFrame()
+        finally:
+            if conn: conn.close()
+
     def buscar_fornecedores(self):
-        """Busca a lista de fornecedores cadastrados."""
+        """
+        Retorna apenas usuários ativos com perfil FORNECEDOR em usuarios_sistema,
+        cruzando com a tabela fornecedores pelo nome para obter a marca associada.
+        Colunas retornadas: fornecedor (nome do usuário), marca
+        """
         if not self.creds: return pd.DataFrame()
         conn = None
         try:
             conn = self._get_connection()
-            query = "SELECT fornecedor, email, marca FROM fornecedores ORDER BY fornecedor"
+            query = """
+                SELECT
+                    u.nome                          AS fornecedor,
+                    COALESCE(f.marca, '')           AS marca
+                FROM usuarios_sistema u
+                LEFT JOIN fornecedores f
+                    ON LOWER(TRIM(f.fornecedor)) = LOWER(TRIM(u.nome))
+                WHERE u.perfil = 'FORNECEDOR'
+                  AND u.ativo  = TRUE
+                ORDER BY u.nome
+            """
             df = pd.read_sql(query, conn)
             df.columns = [c.lower() for c in df.columns]
             return df
         except Exception as e:
             logger.error(f"Erro ao buscar fornecedores: {e}")
-            return pd.DataFrame(columns=['fornecedor', 'email', 'marca'])
+            return pd.DataFrame(columns=['fornecedor', 'marca'])
+        finally:
+            if conn: conn.close()
+
+    def verificar_produtos_fornecedor(self, fornecedor_nome, lista_produtos):
+        """Verifica quais produtos da lista o fornecedor possui (baseado na marca)"""
+        if not self.creds or not lista_produtos: return set(), set()
+        conn = None
+        try:
+            conn = self._get_connection()
+            query = """
+                SELECT DISTINCT TRIM(UPPER(f.marca)) as marca
+                FROM fornecedores f
+                WHERE LOWER(TRIM(f.fornecedor)) = LOWER(TRIM(%s))
+                  AND f.marca IS NOT NULL AND f.marca != ''
+            """
+            df_marcas = pd.read_sql(query, conn, params=(fornecedor_nome,))
+            marcas_fornecedor = set(df_marcas['marca'].tolist()) if not df_marcas.empty else set()
+            
+            if not marcas_fornecedor:
+                return set(), set(lista_produtos)
+            
+            possui = set()
+            nao_possui = set()
+            
+            for prod_id in lista_produtos:
+                query_prod = """
+                    SELECT TRIM(UPPER(marca)) as marca
+                    FROM cad_produto
+                    WHERE TRIM(CAST(codacessog AS TEXT)) = %s
+                    LIMIT 1
+                """
+                df_prod = pd.read_sql(query_prod, conn, params=(str(prod_id).strip(),))
+                if not df_prod.empty:
+                    marca_prod = df_prod['marca'].iloc[0]
+                    if marca_prod in marcas_fornecedor:
+                        possui.add(prod_id)
+                    else:
+                        nao_possui.add(prod_id)
+                else:
+                    nao_possui.add(prod_id)
+            
+            return possui, nao_possui
+        except Exception as e:
+            logger.error(f"Erro ao verificar produtos do fornecedor: {e}")
+            return set(), set(lista_produtos)
         finally:
             if conn: conn.close()
 
@@ -476,24 +721,22 @@ class DatabaseManager:
         finally:
             if conn:
                 conn.close()
+        
 class AppClientePrime:
     def __init__(self):
         self.db = DatabaseManager()
         self.inicializar_estado()
         self.aplicar_estilos()
-        # A lista fixa self.emails_fornecedores foi removida daqui
-        # Agora é gerenciada pelo st.session_state em inicializar_estado
 
     def inicializar_estado(self):
-        if 'menu_ativo' not in st.session_state: st.session_state.menu_ativo = "Gerar Cobertura"
+        perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+        menu_default = "Pedidos" if perfil == "FORNECEDOR" else "Gerar Cobertura"
+        if 'menu_ativo' not in st.session_state: st.session_state.menu_ativo = menu_default
         if 'dados_orcamento' not in st.session_state: st.session_state.dados_orcamento = None
         if 'modo_analise_atual' not in st.session_state: st.session_state.modo_analise_atual = "COMPRA"
         if 'tentativas_login' not in st.session_state: st.session_state.tentativas_login = 0
-
-        # Fornecedores são carregados do banco em tela_orcamento().
-        # Inicializa como dict vazio — sem e-mails hardcoded no código.
-        if 'db_fornecedores' not in st.session_state:
-            st.session_state.db_fornecedores = {}
+        if 'perfil_usuario' not in st.session_state: st.session_state.perfil_usuario = "CLIENTE"
+        if 'db_fornecedores' not in st.session_state: st.session_state.db_fornecedores = {}
 
     def aplicar_estilos(self):
         
@@ -581,42 +824,80 @@ class AppClientePrime:
                     /* Aplicação do Hover Condicional */
                     {hover_secondary}
                     
+                .pedido-container-row {
+                border: 1px solid #E0E0E0; /* Cor da borda */
+                border-radius: 10px;        /* Bordas arredondadas */
+                padding: 15px;             /* Espaçamento interno */
+                margin-bottom: 12px;       /* Espaçamento entre um pedido e outro */
+                background-color: #FFFFFF; /* Fundo branco */
+                transition: transform 0.2s, box-shadow 0.2s;
+            }
+        
+            .pedido-container-row:hover {
+                border-color: #0047AB;     /* Borda azul ao passar o mouse */
+                box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+            }
+                    
             </style>
         """, unsafe_allow_html=True)
 
     def render_sidebar(self):
+        perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
         with st.sidebar:
-            st.markdown('<div style="padding:10px 0px;"><h2 style="color:#CC0000 !important; font-weight:900;">REDE <span style="color:#0047AB;">ESPAFER</span></h2></div>', unsafe_allow_html=True)
+            # Logo e Usuário no topo
+            st.markdown(
+                '<div style="padding:10px 0px;">' 
+                '<h1 style="color:#0047AB !important; font-weight:900; margin-bottom: 8px; text-align: center;">ESPAFER</h1>',
+                unsafe_allow_html=True
+            )
             
-            with st.expander("PEDIDO DE COMPRA", expanded=True):
-                opcoes = ["Gerar Cobertura", "Gerar Orçamento", "Inteligência de Compra"]
-                for opt in opcoes:
-                    is_active = st.session_state.menu_ativo == opt
-                    tipo_botao = "primary" if is_active else "secondary"
-                    if st.button(opt, key=f"sub_{opt}", type=tipo_botao, use_container_width=True):
-                        st.session_state.menu_ativo = opt
-                        st.rerun()
+            # Usuário e Logout logo abaixo da logo
+            perfil_label = {"ADM": "🔑", "CLIENTE": "🏪", "FORNECEDOR": "🚚"}.get(perfil, "👤")
+            col_user, col_logout = st.columns([3.5, 1])
+            with col_user:
+                st.markdown(
+                    f'<div style="color: #FFFFFF; font-size: 0.95rem; padding-top: 6px; font-weight: 500;">{perfil_label} {st.session_state.nome_usuario}</div>',
+                    unsafe_allow_html=True
+                )
+            with col_logout:
+                if st.button("➜", key="btn_logout_top", help="Sair"):
+                    st.session_state.logado = False
+                    st.rerun()
+            
+            st.markdown("---")
 
-            # --- FILTROS (Mantenha dentro do with st.sidebar) ---
-            if "dados_completos" in st.session_state:
+            # ── MENUS POR PERFIL ──────────────────────────────────────
+            if perfil in ("ADM", "CLIENTE"):
+                with st.expander("PEDIDO DE COMPRA", expanded=True):
+                    opcoes = ["Gerar Cobertura", "Gerar Orçamento", "Inteligência de Compra"]
+                    for opt in opcoes:
+                        tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
+                        if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
+                            st.session_state.menu_ativo = opt
+                            st.rerun()
+
+            if perfil in ("ADM", "FORNECEDOR"):
+                with st.expander("FORNECEDOR", expanded=(perfil == "FORNECEDOR")):
+                    opcoes_forn = ["Orçamento", "Pedidos"]
+                    for opt in opcoes_forn:
+                        tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
+                        if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
+                            st.session_state.menu_ativo = opt
+                            st.rerun()
+
+            # --- FILTROS DINÂMICOS (só aparece para Cliente/ADM com dados) ---
+            if perfil in ("ADM", "CLIENTE") and "dados_completos" in st.session_state:
                 df_ref = st.session_state.dados_completos
                 st.markdown("---")
                 st.markdown("### 🔍 Filtros")
-
-                # Categoria (Marcas)
                 opcoes_marcas = sorted(df_ref['marca'].dropna().unique())
                 marcas = st.multiselect("Marcas:", opcoes_marcas, key="f_marca")
-
-                # Subcategoria dinâmica
                 if marcas:
                     df_sub = df_ref[df_ref['marca'].isin(marcas)]
                     opcoes_sub = sorted(df_sub['nome_sub_grupo'].dropna().unique())
                 else:
                     opcoes_sub = sorted(df_ref['nome_sub_grupo'].dropna().unique())
-
                 subs = st.multiselect("Subcategorias:", opcoes_sub, key="f_sub")
-                
-                # IMPORTANTE: Guardar para usar na tela
                 st.session_state['filtro_marca'] = marcas
                 st.session_state['filtro_sub'] = subs
 
@@ -640,7 +921,6 @@ class AppClientePrime:
                     except Exception as e:
                         logger.error(f"Erro ao salvar edição: {e}")
 
-    # --- GERADOR DE PDF (COTAÇÃO) ---
     def gerar_pdf_cotacao(self, fornecedor, grupo_itens):
         # Inicializa o PDF (Certifique-se que a classe PDF está configurada para azul Espafer)
         pdf = PDF(fornecedor=fornecedor) 
@@ -704,13 +984,10 @@ class AppClientePrime:
 
         return pdf.output(dest='S').encode('latin-1', 'replace')
 
-    # --- GERADOR DE PDF (SOBRAS) ---
-    def gerar_pdf_sobra(self, df, dias_corte):
-        # Ordenação e preparação da mensagem
+    def gerar_pdf_sobra(self, df, dias_corte, dias_alvo):
         df = df.sort_values(by='vol_estoque', ascending=False)
         msg_filtro = f"Filtro aplicado: Itens com cobertura superior a {dias_corte} dias."
 
-        # Inicializa o PDF com a paleta da Rede Espafer
         pdf = PDF(
             titulo="RELATÓRIO DE SOBRA DE ESTOQUE", 
             subtitulo="Ordenado por Volume de Estoque (Decrescente)", 
@@ -719,434 +996,580 @@ class AppClientePrime:
         )
         pdf.add_page()
 
-        # --- CONFIGURAÇÕES DE CORES (PALETA ESPAFER) ---
-        AZUL_ESCURO = (0, 71, 171)   # Azul Royal
-        AZUL_CLARO = (235, 245, 255) # Fundo Zebra
+        AZUL_ESCURO = (0, 71, 171)
+        AZUL_CLARO = (235, 245, 255)
         CINZA_TEXTO = (40, 40, 40)
         BRANCO = (255, 255, 255)
 
-        # --- CABEÇALHO DA TABELA ---
-        pdf.set_font('Arial', 'B', 9)
+        pdf.set_font('Arial', 'B', 8)
         pdf.set_fill_color(*AZUL_ESCURO)
         pdf.set_text_color(*BRANCO)
         pdf.set_draw_color(*AZUL_ESCURO)
 
-        # Altura 9 para um cabeçalho robusto
-        pdf.cell(15, 9, 'LOJA', 1, 0, 'C', 1)
-        pdf.cell(105, 9, '  DESCRIÇÃO DO PRODUTO', 1, 0, 'L', 1) # Ajustado para 105 para dar espaço às outras
-        pdf.cell(35, 9, 'ESTOQUE ATUAL', 1, 0, 'C', 1)
-        pdf.cell(35, 9, 'VENDA (30D)', 1, 1, 'C', 1)
+        pdf.cell(12, 8, 'LOJA', 1, 0, 'C', 1)
+        pdf.cell(20, 8, 'CODIGO', 1, 0, 'C', 1)
+        pdf.cell(95, 8, 'PRODUTO', 1, 0, 'C', 1)
+        pdf.cell(30, 8, 'ESTOQUE', 1, 0, 'C', 1)
+        pdf.cell(33, 8, f'VENDA ({dias_alvo}D)', 1, 1, 'C', 1)
 
-        # --- CORPO DA TABELA ---
-        pdf.set_font('Arial', '', 8)
+        pdf.set_font('Arial', '', 7)
         pdf.set_text_color(*CINZA_TEXTO)
 
         fill = False 
-        for index, row in df.iterrows():
-            # Zebra modernizada
+        for _, row in df.iterrows():
             if fill:
                 pdf.set_fill_color(*AZUL_CLARO)
             else:
                 pdf.set_fill_color(*BRANCO)
 
-            # Sanitização e tratamento do nome
-            raw_prod = str(row['produto']).upper()
-            raw_prod = raw_prod.replace('\u2013', '-').replace('\u2014', '-')
-            produto_nome_sanitizado = raw_prod.encode('latin-1', 'replace').decode('latin-1')
+            produto_nome = str(row['produto'])[:50]
+            produto_nome = produto_nome.encode('latin-1', 'replace').decode('latin-1')
 
-            # Truncar nome para não sobrepor colunas
-            produto_nome = produto_nome_sanitizado[:60] + '...' if len(produto_nome_sanitizado) > 60 else produto_nome_sanitizado
-
-            # Desenhando as células com borda apenas inferior ('B')
-            pdf.cell(15, 8, str(row['filial']), 'B', 0, 'C', True)
-            pdf.cell(105, 8, '  ' + produto_nome, 'B', 0, 'L', True)
-
-            # Valores de Estoque e Venda (Estoque em Negrito para destaque)
-            pdf.set_font('Arial', 'B', 8)
-            pdf.cell(35, 8, f"{row['vol_estoque']:.0f} und ", 'B', 0, 'R', True)
-
-            pdf.set_font('Arial', '', 8)
-            pdf.cell(35, 8, f"{row['venda_periodo']:.1f}  ", 'B', 1, 'R', True)
+            pdf.cell(12, 7, str(row['filial'])[:5], 'B', 0, 'C', True)
+            pdf.cell(20, 7, str(row['idproduto'])[:10], 'B', 0, 'C', True)
+            pdf.cell(95, 7, ' ' + produto_nome, 'B', 0, 'L', True)
+            
+            pdf.set_font('Arial', 'B', 7)
+            pdf.cell(30, 7, f"{row['vol_estoque']:.0f} und", 'B', 0, 'R', True)
+            
+            pdf.set_font('Arial', '', 7)
+            pdf.cell(33, 7, f"{row['venda_periodo']:.1f}", 'B', 1, 'R', True)
 
             fill = not fill 
 
-        # --- RODAPÉ ---
-        pdf.ln(5)
+        pdf.ln(3)
         pdf.set_font('Arial', 'I', 7)
         pdf.set_text_color(120, 120, 120)
         data_atual = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
-        pdf.cell(190, 8, f'Relatório de Inteligência de Estoque - Rede Espafer - Gerado em: {data_atual}', 0, 0, 'R')
+        pdf.cell(190, 6, f'Rede Espafer - Gerado em: {data_atual}', 0, 0, 'R')
 
         return pdf.output(dest='S').encode('latin-1', 'replace')
     
     def gerar_pdf_pedido(self, fornecedor, df_pedido):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", "B", 16)
-
-        # Cabeçalho
-        pdf.cell(190, 10, f"PEDIDO DE COMPRA - REDE ESPAFER", ln=True, align='C')
-        pdf.set_font("Arial", "", 12)
-        pdf.cell(190, 10, f"Fornecedor: {fornecedor}", ln=True, align='L')
-        pdf.cell(190, 10, f"Data: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='L')
-        pdf.ln(10)
-
-        # Tabela - Cabeçalho
-        pdf.set_fill_color(200, 220, 255)
-        pdf.set_font("Arial", "B", 10)
-        pdf.cell(30, 8, "Código", 1, 0, 'C', True)
-        pdf.cell(80, 8, "Produto", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Qtd", 1, 0, 'C', True)
-        pdf.cell(25, 8, "V. Unit", 1, 0, 'C', True)
-        pdf.cell(30, 8, "Total", 1, 1, 'C', True)
-
-        # Tabela - Dados
-        pdf.set_font("Arial", "", 9)
-        total_geral = 0
-        for _, row in df_pedido.iterrows():
-            pdf.cell(30, 7, str(row['Código']), 1)
-            pdf.cell(80, 7, str(row['Produto'])[:40], 1) # Limita nome longo
-            pdf.cell(25, 7, str(row['Quantidade']), 1, 0, 'C')
-            pdf.cell(25, 7, f"R$ {row['Valor Unitário']:.2f}", 1, 0, 'R')
-            pdf.cell(30, 7, f"R$ {row['Total']:.2f}", 1, 1, 'R')
-            total_geral += row['Total']
-
-        # Rodapé Total
-        pdf.set_font("Arial", "B", 11)
-        pdf.cell(160, 10, "VALOR TOTAL DO PEDIDO:", 0, 0, 'R')
-        pdf.cell(30, 10, f"R$ {total_geral:.2f}", 0, 1, 'R')
-
-        return pdf.output(dest='S').encode('latin-1') # Retorna os bytes do PDF
-
-    # --- EXCEL ATUALIZADO (IMPOSTOS, FRETE, PRAZO) ---
-    def gerar_excel_cotacao(self, df_input):
-        output = io.BytesIO()
         
-        # 1. Prepara os dados iniciais (Apenas o que já temos)
-        # Vamos criar o DataFrame base apenas com as colunas fixas de origem
-        df_export = df_input[['idproduto', 'produto', 'Qtd Compra']].copy()
+        AZUL = (0, 71, 171)  # #0047AB
+        BRANCO = (255, 255, 255)
+        PRETO = (40, 40, 40)
+        CINZA = (100, 100, 100)
         
-        # Renomeia para o cabeçalho final
-        df_export.columns = ['Código', 'Produto', 'Quantidade']
+        # Cabeçalho profissional
+        pdf.set_font('Arial', 'B', 18)
+        pdf.set_text_color(*PRETO)
+        pdf.cell(0, 10, 'REDE ESPAFER', 0, 1, 'L')
+        pdf.set_font('Arial', '', 9)
+        pdf.set_text_color(*CINZA)
+        pdf.cell(0, 5, 'Solicitacao de Cotacao de Materiais', 0, 1, 'L')
+        pdf.ln(8)
         
-        # 2. Configura o Excel Writer
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Escreve os dados iniciais (pandas trata as 3 primeiras colunas)
-            df_export.to_excel(writer, index=False, sheet_name='Cotacao')
-            
-            workbook = writer.book
-            worksheet = writer.sheets['Cotacao']
-            
-            # --- Definição de Formatos ---
-            
-            # Formato CINZA para campos editáveis (Solicitado)
-            fmt_editavel_cinza = workbook.add_format({
-                'bg_color': '#D3D3D3', 
-                'border': 1,
-                'num_format': '#,##0.00'
-            })
-            
-            # Formato para o Total (Negrito, calculado)
-            fmt_total = workbook.add_format({
-                'bold': True, 
-                'border': 1, 
-                'num_format': 'R$ #,##0.00',
-                'bg_color': '#F2F2F2' # Um cinza bem clarinho só pra destacar
-            })
-            
-            # Formato básico para bordas nas colunas de texto
-            fmt_texto = workbook.add_format({'border': 1})
-            fmt_numero = workbook.add_format({'border': 1, 'num_format': '0'})
-
-            # --- Cabeçalhos das Colunas Novas ---
-            # O Pandas escreveu as colunas 0, 1 e 2. Vamos escrever os cabeçalhos das 3 a 7 manualmente.
-            header_format = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#E0E0E0'})
-            
-            colunas_extras = ['Valor Unitário', 'Impostos', 'Frete', 'Prazo de Entrega', 'Valor Total']
-            for idx, col_name in enumerate(colunas_extras):
-                # Começa na coluna 3 (D)
-                worksheet.write(0, 3 + idx, col_name, header_format)
-
-            # --- Ajuste de Largura e Filtros ---
-            
-            # Aplica Filtro em TODAS as colunas (A até H -> 0 a 7)
-            worksheet.autofilter(0, 0, len(df_export), 7)
-            
-            worksheet.set_column('A:A', 10) # Código
-            worksheet.set_column('B:B', 40) # Produto
-            worksheet.set_column('C:C', 12) # Quantidade
-            worksheet.set_column('D:D', 15) # Vl Unit (Cinza)
-            worksheet.set_column('E:E', 12) # Impostos (Cinza)
-            worksheet.set_column('F:F', 12) # Frete (Cinza)
-            worksheet.set_column('G:G', 18) # Prazo (Cinza)
-            worksheet.set_column('H:H', 18) # Total
-
-            # --- Loop para preencher células e fórmulas ---
-            for i in range(len(df_export)):
-                row = i + 1 # Linha do Excel (1-based, pulando header)
-                
-                # Reaplica borda nas colunas A, B, C que o Pandas escreveu
-                worksheet.write(row, 0, df_export.iloc[i, 0], fmt_texto)  # Código
-                worksheet.write(row, 1, df_export.iloc[i, 1], fmt_texto)  # Produto
-                worksheet.write(row, 2, df_export.iloc[i, 2], fmt_numero) # Quantidade
-                
-                # Colunas Editáveis (CINZA) - Escrevemos em branco
-                worksheet.write_blank(row, 3, None, fmt_editavel_cinza) # D: Vl Unit
-                worksheet.write_blank(row, 4, None, fmt_editavel_cinza) # E: Impostos
-                worksheet.write_blank(row, 5, None, fmt_editavel_cinza) # F: Frete
-                worksheet.write_blank(row, 6, None, fmt_editavel_cinza) # G: Prazo
-                
-                # Coluna Valor Total (H) - FÓRMULA
-                # Lógica: (Qtd * Vl Unit) + Impostos + Frete
-                # Colunas: C=Qtd, D=Unit, E=Imp, F=Frete
-                # Excel row é row+1
-                formula = f'=(C{row+1}*D{row+1})+E{row+1}+F{row+1}'
-                worksheet.write_formula(row, 7, formula, fmt_total)
-
-        output.seek(0)
-        return output
-
-    def enviar_email_com_anexo(self, destinatario, assunto, mensagem, anexos):
-        """Envia email com anexos usando SMTP."""
-        if "email" not in st.secrets:
-            logger.error("Configuração [email] não encontrada em secrets.toml")
-            return False, "Configuração de e-mail ausente"
-
-        email_config = st.secrets["email"]
-        dest_log = _mascarar_email(destinatario)  # Nunca loga o e-mail completo
-
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = email_config["sender_email"]
-            msg['To'] = destinatario
-            msg['Subject'] = assunto
-
-            msg.attach(MIMEText(mensagem, 'html'))
-
-            for anexo in anexos:
-                try:
-                    blob = anexo['dados'].getvalue() if hasattr(anexo['dados'], 'getvalue') else anexo['dados']
-                    part = MIMEApplication(blob, Name=anexo['nome'])
-                    part['Content-Disposition'] = f'attachment; filename="{anexo["nome"]}"'
-                    msg.attach(part)
-                    logger.info(f"Anexo adicionado: {anexo['nome']}")
-                except Exception as e:
-                    logger.error(f"Erro ao adicionar anexo {anexo['nome']}: {e}")
-                    return False, f"Erro ao preparar o anexo {anexo['nome']}"
-
-            logger.info(f"Enviando e-mail para {dest_log} — assunto: {assunto}")
-            server = smtplib.SMTP(email_config["smtp_server"], int(email_config.get("smtp_port", 587)))
-            server.starttls()
-            server.login(email_config["sender_email"], email_config["sender_password"])
-            server.send_message(msg)
-            server.quit()
-            logger.info(f"E-mail enviado com sucesso para {dest_log}")
-            return True, "Enviado"
-
-        except smtplib.SMTPAuthenticationError:
-            logger.error(f"Erro de autenticação SMTP ao enviar para {dest_log}")
-            return False, "Falha na autenticação do servidor de e-mail"
-        except smtplib.SMTPException as e:
-            logger.error(f"Erro SMTP ao enviar para {dest_log}: {e}")
-            return False, "Erro no envio do e-mail. Verifique as configurações SMTP."
-        except Exception as e:
-            logger.error(f"Erro inesperado ao enviar e-mail para {dest_log}: {e}", exc_info=True)
-            return False, "Erro inesperado no envio. Contate o suporte."
-
-    # --- TELA DE ORÇAMENTO  ---
-    def tela_orcamento(self):
-        st.markdown(f'<h1 style="color:black; font-weight:900;">{st.session_state.menu_ativo}</h1>', unsafe_allow_html=True)
-
-        # 1. VERIFICAÇÃO INICIAL
-        if st.session_state.dados_orcamento is None or st.session_state.dados_orcamento.empty:
-            st.warning("Nenhum produto selecionado para orçamento.")
-            return
-
-        # 2. BUSCA DE FORNECEDORES
-        df_forn_db = self.db.buscar_fornecedores() 
-        if df_forn_db.empty:
-            st.error("A tabela de fornecedores está vazia.")
-            return
-
-        # Mapeamento de contatos
-        df_forn_db['fornecedor'] = df_forn_db['fornecedor'].astype(str).str.strip()
-        df_forn_db['marca_aux'] = df_forn_db['marca'].astype(str).str.strip().str.upper()
-
-        st.session_state.db_fornecedores = {
-            row['fornecedor']: {'email': row['email']} 
-            for _, row in df_forn_db.iterrows() 
-            if row['fornecedor'].lower() not in ['none', 'nan', '', 'null']
-        }
-        lista_geral_fornecedores = sorted(list(st.session_state.db_fornecedores.keys()))
-
-        # 3. PREPARAÇÃO DE DADOS E FILTROS
-        df_master = st.session_state.dados_orcamento.copy()
-        df_master['marca_aux'] = df_master['marca'].astype(str).str.strip().str.upper()
-        df_master['cat_filtro'] = df_master['grupo'].fillna("SEM GRUPO").astype(str).str.upper() if 'grupo' in df_master.columns else "SEM GRUPO"
-
-        mapa_marca_fornecedor = df_forn_db.groupby('marca_aux')['fornecedor'].apply(
-            lambda x: list(set(i for i in x if i.lower() not in ['none', 'nan', '']))
-        ).to_dict()
-
-        cats = sorted([str(c) for c in df_master['cat_filtro'].unique() if str(c).strip() not in ["", "None", "nan"]])
-
-        c1, c2, c3, c4 = st.columns([1, 1.5, 1.5, 1.5], vertical_alignment="bottom")
-        with c1: filtro_positivo = st.selectbox("Filtrar Grupo:", options=["TODOS"] + cats)
-        with c2: grupos_remover = st.multiselect("Remover Grupo:", options=cats)
-        with c3: termo_busca = st.text_input("Pesquisar Produto:", key="search_orc")
-        with c4:
-            modo_envio = st.selectbox("Enviar Para:", options=["Manual (Sugerir p/ Marca)", "TODOS (Cotação Aberta)"] + lista_geral_fornecedores)
-            enviar_todos_forn = (modo_envio == "TODOS (Cotação Aberta)")
-
-        # Lógica de Sugestão de Fornecedor
-        if enviar_todos_forn:
-            df_master['Fornecedor'] = [["TODOS"]] * len(df_master)
-        elif modo_envio != "Manual (Sugerir p/ Marca)":
-            df_master['Fornecedor'] = [[modo_envio]] * len(df_master)
+        # Informações do pedido
+        pdf.set_font('Arial', 'B', 10)
+        pdf.set_text_color(*PRETO)
+        pdf.cell(0, 6, f'Destinatario: {fornecedor}', 0, 1, 'L')
+        pdf.set_font('Arial', '', 9)
+        pdf.set_text_color(*CINZA)
+        pdf.cell(0, 5, f'Emitido em: {datetime.datetime.now().strftime("%d/%m/%Y as %H:%M")}', 0, 1, 'L')
+        pdf.cell(0, 5, 'Favor retornar com valores e prazos de entrega', 0, 1, 'L')
+        pdf.ln(8)
+        
+        # Ordena por quantidade (maior primeiro)
+        df_sorted = df_pedido.copy()
+        df_sorted['qtd_sort'] = df_sorted.apply(
+            lambda row: int(row.get('quantidade', row.get('Quantidade', 0))), axis=1
+        )
+        df_sorted = df_sorted.sort_values('qtd_sort', ascending=False)
+        
+        # Verifica se tem coluna de valor unitário
+        tem_valor = 'Valor Unitário' in df_sorted.columns
+        
+        # Tabela - Cabeçalho AZUL
+        pdf.set_font('Arial', 'B', 9)
+        pdf.set_fill_color(*AZUL)
+        pdf.set_text_color(*BRANCO)
+        pdf.set_draw_color(0, 0, 0)
+        
+        if tem_valor:
+            pdf.cell(30, 10, 'CODIGO', 1, 0, 'C', True)
+            pdf.cell(105, 10, 'PRODUTO', 1, 0, 'C', True)
+            pdf.cell(25, 10, 'QTD', 1, 0, 'C', True)
+            pdf.cell(30, 10, 'VL. UNIT.', 1, 1, 'C', True)
         else:
-            def sugerir_um_fornecedor(marca):
-                opcoes = mapa_marca_fornecedor.get(marca, [])
-                return [opcoes[0]] if opcoes else ([lista_geral_fornecedores[0]] if lista_geral_fornecedores else [])
-            df_master['Fornecedor'] = df_master['marca_aux'].apply(sugerir_um_fornecedor)
+            pdf.cell(35, 10, 'CODIGO', 1, 0, 'C', True)
+            pdf.cell(130, 10, 'PRODUTO', 1, 0, 'C', True)
+            pdf.cell(25, 10, 'QTD', 1, 1, 'C', True)
+        
+        # Corpo da tabela
+        pdf.set_font('Arial', '', 8)
+        pdf.set_text_color(*PRETO)
+        pdf.set_fill_color(*BRANCO)
+        
+        for _, row in df_sorted.iterrows():
+            codigo = str(row.get('codigo_produto', row.get('Codigo', '')))
+            produto = str(row.get('nome_produto', row.get('Produto', '')))[:60]
+            qtd = int(row.get('quantidade', row.get('Quantidade', 0)))
+            
+            if tem_valor:
+                valor_unit = float(row.get('Valor Unitário', 0))
+                pdf.cell(30, 8, codigo, 1, 0, 'C')
+                pdf.cell(105, 8, '  ' + produto, 1, 0, 'L')
+                pdf.set_font('Arial', 'B', 8)
+                pdf.cell(25, 8, str(qtd), 1, 0, 'C')
+                pdf.cell(30, 8, f'R$ {valor_unit:.2f}', 1, 1, 'R')
+                pdf.set_font('Arial', '', 8)
+            else:
+                pdf.cell(35, 8, codigo, 1, 0, 'C')
+                pdf.cell(130, 8, '  ' + produto, 1, 0, 'L')
+                pdf.set_font('Arial', 'B', 8)
+                pdf.cell(25, 8, str(qtd), 1, 1, 'C')
+                pdf.set_font('Arial', '', 8)
+        
+        # Total se houver valor unitário
+        if tem_valor:
+            pdf.ln(5)
+            total = (df_sorted['quantidade'] * df_sorted['Valor Unitário']).sum()
+            pdf.set_font('Arial', 'B', 10)
+            pdf.set_text_color(*AZUL)
+            pdf.cell(0, 8, f'TOTAL: R$ {total:,.2f}', 0, 1, 'R')
+        
+        # Rodapé
+        pdf.ln(10)
+        pdf.set_font('Arial', '', 8)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(0, 5, 'Rede Espafer - Departamento de Compras', 0, 0, 'C')
+        
+        return pdf.output(dest='S').encode('latin-1')
+
+    def tela_orcamento(self):
+        st.markdown('<h1 style="color:black; font-weight:900;">Gerar Orçamento</h1>', unsafe_allow_html=True)
+
+        if st.session_state.dados_orcamento is None or st.session_state.dados_orcamento.empty:
+            st.warning("Nenhum produto selecionado. Acesse **Gerar Cobertura** primeiro.")
+            return
+
+        # ── Apenas usuários com perfil FORNECEDOR + marca associada ──
+        df_forn_db = self.db.buscar_fornecedores()
+        if df_forn_db.empty:
+            st.error("Nenhum usuário com perfil Fornecedor cadastrado no sistema.")
+            return
+
+        df_forn_db['fornecedor'] = df_forn_db['fornecedor'].astype(str).str.strip()
+        df_forn_db['marca_aux']  = df_forn_db['marca'].astype(str).str.strip().str.upper()
+
+        # mapa marca → fornecedores que atendem aquela marca
+        mapa_marca_forn = (
+            df_forn_db[df_forn_db['marca_aux'].notna() & (df_forn_db['marca_aux'] != '')]
+            .groupby('marca_aux')['fornecedor']
+            .apply(lambda x: sorted(set(x)))
+            .to_dict()
+        )
+        # mapa inverso: fornecedor → suas marcas
+        mapa_forn_marcas = (
+            df_forn_db[df_forn_db['marca_aux'].notna() & (df_forn_db['marca_aux'] != '')]
+            .groupby('fornecedor')['marca_aux']
+            .apply(set)
+            .to_dict()
+        )
+
+        lista_geral_fornecedores = sorted(df_forn_db['fornecedor'].unique().tolist())
+
+        # Salva para uso no criar_pedido
+        st.session_state.db_fornecedores = {
+            row['fornecedor']: {'marca': row['marca']}
+            for _, row in df_forn_db.iterrows()
+        }
+
+        # ── Prepara dados ─────────────────────────────────────────
+        df_master = st.session_state.dados_orcamento.copy()
+        df_master['marca_aux']  = df_master['marca'].astype(str).str.strip().str.upper()
+        df_master['cat_filtro'] = (
+            df_master['marca'].fillna("SEM MARCA").astype(str).str.upper()
+            if 'marca' in df_master.columns else "SEM MARCA"
+        )
+        cats = sorted([str(c) for c in df_master['cat_filtro'].unique()
+                       if str(c).strip() not in ["", "None", "nan"]])
+
+        # ── Controles ─────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns([1, 1.5, 1.5, 1.5], vertical_alignment="bottom")
+        with c1: filtro_positivo = st.selectbox("Filtrar Marca:", ["TODOS"] + cats)
+        with c2: grupos_remover  = st.multiselect("Remover Marca:", cats)
+        with c3: termo_busca     = st.text_input("Pesquisar Produto:", key="search_orc")
+        with c4: modo_envio      = st.selectbox(
+            "Destinar Para:",
+            ["Auto (por Marca)"] + lista_geral_fornecedores
+        )
+        
+        # Verificar produtos do fornecedor selecionado
+        produtos_possui = set()
+        produtos_nao_possui = set()
+        if modo_envio != "Auto (por Marca)":
+            lista_ids = df_master['idproduto'].unique().tolist()
+            produtos_possui, produtos_nao_possui = self.db.verificar_produtos_fornecedor(modo_envio, lista_ids)
+            
+            if produtos_nao_possui:
+                st.warning(f"⚠️ {len(produtos_nao_possui)} item(ns) não disponível(is) para {modo_envio} (marca incompatível). Serão distribuídos para outros fornecedores.")
+
+        # ── Atribui fornecedor por linha ──────────────────────────
+        FORNECEDOR_PADRAO = "Natan Zimmer 99"
+
+        def _sugerir_por_marca(marca_up):
+            """Retorna fornecedores que atendem esta marca. Sem marca ou sem match → fornecedor padrão."""
+            if not marca_up or marca_up in ('', 'NAN', 'NONE', 'NAO DEFINIDO'):
+                return [FORNECEDOR_PADRAO]
+            resultado = mapa_marca_forn.get(marca_up, [])
+            return resultado if resultado else [FORNECEDOR_PADRAO]
+
+        if modo_envio == "Auto (por Marca)":
+            df_master['Fornecedor'] = df_master['marca_aux'].apply(_sugerir_por_marca)
+        else:
+            # Atribui fornecedor apenas para produtos que ele possui
+            df_master['Fornecedor'] = df_master.apply(
+                lambda row: [modo_envio] if row['idproduto'] in produtos_possui
+                            else _sugerir_por_marca(row['marca_aux']),
+                axis=1
+            )
 
         st.session_state.dados_orcamento = df_master
 
-        # 4. MENSAGEM DE DICA E TABELA
-        st.info("💡 **Dica:** Campos com '✏️' são editáveis (Fornecedor e Quantidade).")
+        st.info("💡 Colunas com '✏️' são editáveis.")
 
+        # ── Tabela ────────────────────────────────────────────────
         df_view = df_master.copy()
-        # (Filtros de visualização aplicados aqui...)
+        
+        # Filtrar apenas produtos que o fornecedor possui (se não for Auto)
+        if modo_envio != "Auto (por Marca)" and produtos_possui:
+            df_view = df_view[df_view['idproduto'].isin(produtos_possui)]
+        
+        if grupos_remover:
+            df_view = df_view[~df_view['cat_filtro'].isin(grupos_remover)]
+        if filtro_positivo != "TODOS":
+            df_view = df_view[df_view['cat_filtro'] == filtro_positivo]
+        if termo_busca:
+            df_view = df_view[df_view['produto'].astype(str).str.upper().str.contains(termo_busca.upper())]
         df_view = df_view.reset_index(drop=True)
 
         st.data_editor(
-            df_view[['idproduto', 'produto', 'cat_filtro', 'Fornecedor', 'Qtd Compra']],
+            df_view[['idproduto', 'produto', 'marca', 'grupo', 'Fornecedor', 'Qtd Compra']],
             column_config={
-                "idproduto": st.column_config.TextColumn("Cód.", disabled=True),
-                "produto": st.column_config.TextColumn("Produto", disabled=True, width="large"),
-                "Fornecedor": st.column_config.MultiselectColumn("✏️ Fornecedor", options=lista_geral_fornecedores),
-                "Qtd Compra": st.column_config.NumberColumn("✏️ Quantidade", min_value=0),
+                "idproduto":  st.column_config.TextColumn("Cód.",    disabled=True),
+                "produto":    st.column_config.TextColumn("Produto", disabled=True, width="large"),
+                "marca":      st.column_config.TextColumn("Marca",   disabled=True),
+                "grupo":      st.column_config.TextColumn("Grupo",   disabled=True),
+                "Fornecedor": st.column_config.MultiselectColumn(
+                    "✏️ Fornecedor", options=lista_geral_fornecedores, width="large"
+                ),
+                "Qtd Compra": st.column_config.NumberColumn("✏️ Quantidade", min_value=0, format="%d"),
             },
-            hide_index=True, use_container_width=True, key="editor_orcamento_grid", on_change=self.salvar_edicoes
+            hide_index=True, use_container_width=True,
+            key="editor_orcamento_grid", on_change=self.salvar_edicoes
         )
-
         st.divider()
 
-        # 5. BOTÃO DE ENVIO COM GERAÇÃO DE EXCEL PROFISSIONAL
-        if st.button("📨 ENVIAR COTAÇÃO", type="primary"):
-            df_final_envio = st.session_state.dados_orcamento.copy()
-            itens_para_compra = df_final_envio[df_final_envio['Qtd Compra'] > 0].copy()
+        # ── Botão Registrar ───────────────────────────────────────
+        col_btn, _ = st.columns([1, 3])
+        with col_btn:
+            if st.button("📋 REGISTRAR PEDIDO AO FORNECEDOR", type="primary", use_container_width=True):
+                df_final = st.session_state.dados_orcamento.copy()
+                itens = df_final[df_final['Qtd Compra'] > 0].copy()
+
+                if itens.empty:
+                    st.warning("Preencha a quantidade de pelo menos um item.")
+                    return
+
+                # Agrupa itens por fornecedor (respeitando a marca de cada um)
+                cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
+                pedidos_por_forn: dict = {}
+                for _, row in itens.iterrows():
+                    forn_lista = row.get('Fornecedor', [])
+                    if not isinstance(forn_lista, list) or len(forn_lista) == 0:
+                        continue
+                    for forn in forn_lista:
+                        pedidos_por_forn.setdefault(forn, []).append(row)
+
+                if not pedidos_por_forn:
+                    st.warning("Nenhum item com fornecedor atribuído. Verifique o cadastro de marcas.")
+                    return
+
+                enviados, erros = 0, []
+                with st.spinner("Registrando pedidos..."):
+                    for forn, linhas in pedidos_por_forn.items():
+                        df_forn_itens = pd.DataFrame(linhas)
+                        try:
+                            numero = self.db.criar_pedido(cliente_nome, forn, df_forn_itens)
+                            enviados += 1
+                            logger.info(f"Pedido {numero} → {forn} ({len(linhas)} itens)")
+                        except Exception as e:
+                            erros.append(forn)
+                            st.error(f"❌ Erro ao registrar pedido para **{forn}**: `{e}`")
+
+                if enviados:
+                    st.success(
+                        f"✅ {enviados} pedido(s) registrado(s). "
+                        "Cada fornecedor verá apenas os itens da sua marca."
+                    )
+                    st.session_state.dados_orcamento = None
+                if erros:
+                    st.error(f"Falha ao registrar pedido para: {', '.join(erros)}")
+
+    def tela_pedidos_confirmados(self):
+        """Tela para fornecedor visualizar pedidos confirmados pelo cliente"""
+        perfil = st.session_state.get('perfil', 'FORNECEDOR')
+        nome_usuario = st.session_state.get('nome_usuario', '')
+
+        st.markdown('<h1 style="color:black; font-weight:900;">📦 Pedidos Confirmados</h1>', unsafe_allow_html=True)
+
+        # CSS para correção de cores
+        st.markdown("""
+            <style>
+            .black-text { color: #333333 !important; font-weight: 500; }
+            .pedido-num-bold { color: #0047AB !important; font-weight: 900; }
+            .header-title { color: #000000 !important; font-weight: 800; font-size: 1rem; }
+            </style>
+        """, unsafe_allow_html=True)
+
+        # Buscar pedidos confirmados do session_state
+        pedidos_confirmados = st.session_state.get('pedidos_confirmados', {})
         
-            if itens_para_compra.empty:
-                st.warning("Preencha a quantidade de envio.")
+        if not pedidos_confirmados:
+            st.info("Nenhum pedido confirmado disponível no momento.")
+            return
+
+        # Filtrar por fornecedor se não for ADM
+        if perfil == "FORNECEDOR":
+            pedidos_confirmados = {k: v for k, v in pedidos_confirmados.items() if k == nome_usuario}
+
+        if not pedidos_confirmados:
+            st.info("Nenhum pedido confirmado para você no momento.")
+            return
+
+        # Lista de pedidos confirmados
+        with st.container(border=True):
+            c_forn, c_qtd, c_total, c_acao = st.columns([3, 2, 2, 2])
+            c_forn.markdown('<div class="header-title">Fornecedor</div>', unsafe_allow_html=True)
+            c_qtd.markdown('<div class="header-title">Qtd Itens</div>', unsafe_allow_html=True)
+            c_total.markdown('<div class="header-title">Total</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
+
+            for fornecedor, itens in pedidos_confirmados.items():
+                df_pedido = pd.DataFrame(itens)
+                qtd_itens = len(df_pedido)
+                total = (df_pedido['quantidade'] * df_pedido['Valor Unitário']).sum()
+                
+                col_f, col_q, col_t, col_a = st.columns([3, 2, 2, 2])
+                col_f.markdown(f'<div class="pedido-num-bold" style="padding-top:8px;">{fornecedor}</div>', unsafe_allow_html=True)
+                col_q.markdown(f'<div class="black-text" style="padding-top:8px;">{qtd_itens} itens</div>', unsafe_allow_html=True)
+                col_t.markdown(f'<div class="black-text" style="padding-top:8px;">R$ {total:,.2f}</div>', unsafe_allow_html=True)
+                
+                pedido_aberto = st.session_state.get('pedido_confirmado_aberto')
+                texto_botao = "✖ Fechar" if pedido_aberto == fornecedor else "Ver Detalhes"
+                
+                if col_a.button(texto_botao, key=f"ver_conf_{fornecedor}", use_container_width=True):
+                    if pedido_aberto == fornecedor:
+                        del st.session_state['pedido_confirmado_aberto']
+                    else:
+                        st.session_state['pedido_confirmado_aberto'] = fornecedor
+                    st.rerun()
+
+        # Detalhe do pedido confirmado
+        if 'pedido_confirmado_aberto' in st.session_state:
+            fornecedor = st.session_state['pedido_confirmado_aberto']
+            st.divider()
+            st.markdown(f'<h2 style="color:black; font-weight:900;">Detalhes do Pedido - {fornecedor}</h2>', unsafe_allow_html=True)
+            
+            df_pedido = pd.DataFrame(pedidos_confirmados[fornecedor])
+            st.dataframe(df_pedido, use_container_width=True, hide_index=True)
+            
+            total = (df_pedido['quantidade'] * df_pedido['Valor Unitário']).sum()
+            st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total:,.2f}</div>', unsafe_allow_html=True)
+            
+            col_pdf, col_fechar = st.columns(2)
+            with col_pdf:
+                pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_pedido)
+                st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_Confirmado_{fornecedor}.pdf", "application/pdf", use_container_width=True)
+            with col_fechar:
+                if st.button("✖ Fechar", use_container_width=True, key=f"close_conf_{fornecedor}"):
+                    del st.session_state['pedido_confirmado_aberto']
+                    st.rerun()
+
+    def tela_pedidos_fornecedor(self):
+        perfil = st.session_state.get('perfil', 'FORNECEDOR')
+        nome_usuario = st.session_state.get('nome_usuario', '')
+
+        st.markdown('<h1 style="color:black; font-weight:900;">📋 Orçamento</h1>', unsafe_allow_html=True)
+
+        # 1. BUSCA DE DADOS
+        if perfil == "ADM":
+            df_pedidos = self.db.buscar_pedidos_fornecedor()
+        else:
+            df_pedidos = self.db.buscar_pedidos_fornecedor(nome_usuario)
+
+        if df_pedidos.empty:
+            st.info("Nenhum pedido disponível no momento.")
+            return
+
+        # 2. CSS PARA CORREÇÃO DE CORES (Evita texto branco)
+        st.markdown("""
+            <style>
+            .black-text { color: #333333 !important; font-weight: 500; }
+            .pedido-num-bold { color: #0047AB !important; font-weight: 900; }
+            .header-title { color: #000000 !important; font-weight: 800; font-size: 1rem; }
+            /* Ajuste do botão de PDF para não sumir no hover */
+            .stDownloadButton button:hover {
+                background-color: #0047AB !important;
+                color: white !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+
+        # 3. CABEÇALHO DA LISTA COM BORDA
+        with st.container(border=True):
+            c_num, c_cli, c_status, c_data, c_acao = st.columns([1.5, 2.5, 1.5, 1.8, 1.5])
+            c_num.markdown('<div class="header-title">Pedido</div>', unsafe_allow_html=True)
+            c_cli.markdown('<div class="header-title">Cliente</div>', unsafe_allow_html=True)
+            c_status.markdown('<div class="header-title" style="text-align: center;">Status</div>', unsafe_allow_html=True)
+            c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
+
+            # 4. LISTAGEM DE PEDIDOS (Com borda ao redor de cada um)
+            for _, row in df_pedidos.iterrows():
+                pedido_id  = int(row['id'])
+                num        = str(row['numero_pedido'])
+                cliente    = str(row['cliente_nome'])
+                status     = str(row['status'])
+                data_str   = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y') if row['data_criacao'] else '-'
+                
+                badge_cls = "badge-enviado" if status == "Enviado" else "badge-pendente"
+                badge_bg = "#D4EDDA" if status == "Enviado" else "#FFF3CD"
+                badge_txt = "#155724" if status == "Enviado" else "#856404"
+
+                col_n, col_c, col_s, col_d, col_a = st.columns([1.5, 2.5, 1.5, 1.8, 1.5])
+                
+                col_n.markdown(f'<div class="pedido-num-bold" style="padding-top:8px;">#{num}</div>', unsafe_allow_html=True)
+                col_c.markdown(f'<div class="black-text" style="padding-top:8px;">{cliente}</div>', unsafe_allow_html=True)
+                col_s.markdown(f'''
+                    <div style="background:{badge_bg}; color:{badge_txt}; padding:4px 8px; 
+                    border-radius:12px; font-size:0.8rem; font-weight:bold; text-align:center; margin-top:8px;">
+                        {status}
+                    </div>
+                ''', unsafe_allow_html=True)
+                col_d.markdown(f'<div class="black-text" style="padding-top:8px;">{data_str}</div>', unsafe_allow_html=True)
+                
+                pedido_aberto = st.session_state.get('pedido_aberto')
+                texto_botao = "✖ Fechar" if pedido_aberto == pedido_id else "Ver / Responder"
+                
+                if col_a.button(texto_botao, key=f"ver_{pedido_id}", use_container_width=True):
+                    if pedido_aberto == pedido_id:
+                        del st.session_state['pedido_aberto']
+                        if 'pedido_num' in st.session_state:
+                            del st.session_state['pedido_num']
+                    else:
+                        st.session_state['pedido_aberto'] = pedido_id
+                        st.session_state['pedido_num']    = num
+                    st.rerun()
+
+        # 5. DETALHE DO PEDIDO (Abre abaixo da lista ao clicar)
+        if 'pedido_aberto' in st.session_state:
+            pedido_id = st.session_state['pedido_aberto']
+            num       = st.session_state.get('pedido_num', pedido_id)
+            
+            st.divider()
+            # Título com F-String corrigida
+            st.markdown(f'<h2 style="color:black; font-weight:900;">Detalhes do Pedido #{num}</h2>', unsafe_allow_html=True)
+
+            df_itens = self.db.buscar_itens_pedido(pedido_id)
+            if df_itens.empty:
+                st.warning("Nenhum item encontrado para este pedido.")
             else:
-                with st.spinner("Gerando planilhas profissionais e enviando..."):
-                    envios_sucesso = 0
-                    # Identifica fornecedores únicos que possuem itens para comprar
-                    fornecedores_alvo = set()
-                    for lista in itens_para_compra['Fornecedor']:
-                        if isinstance(lista, list): fornecedores_alvo.update(lista)
-        
-                    for forn in fornecedores_alvo:
-                        # Filtra produtos deste fornecedor
-                        df_forn = itens_para_compra[itens_para_compra['Fornecedor'].apply(lambda x: forn in x if isinstance(x, list) else False)]
-                        email_dest = st.session_state.db_fornecedores.get(forn, {}).get("email")
-        
-                        if email_dest:
-                            # --- 1. GERAÇÃO DO EXCEL COM TODAS AS CONFIGURAÇÕES ---
-                            buffer_excel = io.BytesIO()
-                            with pd.ExcelWriter(buffer_excel, engine='xlsxwriter') as writer:
-                                workbook = writer.book
-                                worksheet = workbook.add_worksheet('Cotacao')
-                                
-                                # FORMATOS (Igual ao seu código original)
-                                fmt_cabecalho = workbook.add_format({
-                                    'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#EEEEEE', 'border': 1
-                                })
-                                fmt_texto = workbook.add_format({'border': 1})
-                                fmt_numero = workbook.add_format({'border': 1, 'align': 'center'})
-                                
-                                # Estilo CINZA para entrada de dados (Onde o fornecedor digita)
-                                fmt_cinza_input = workbook.add_format({
-                                    'bg_color': '#D3D3D3', 'border': 1, 'num_format': 'R$ #,##0.00'
-                                })
-                                
-                                # Estilo TOTAL com fórmula e negrito
-                                fmt_total = workbook.add_format({
-                                    'num_format': 'R$ #,##0.00', 'border': 1, 'bold': True
-                                })
-                                fmt_data = workbook.add_format({
-                                    'bg_color': '#D3D3D3', 
-                                    'border': 1, 
-                                    'num_format': 'dd/mm/yyyy',
-                                    'align': 'center'
-                                })
-        
-                                # CABEÇALHOS
-                                colunas = ['Cód.', 'Produto', 'Qtd.', 'Valor Unitário', 'Valor Total', 'Prazo Entrega']
-                                for col_num, valor in enumerate(colunas):
-                                    worksheet.write(0, col_num, valor, fmt_cabecalho)
-        
-                                # LINHAS COM DADOS E FÓRMULAS
-                                for row_idx, row_data in df_forn.reset_index(drop=True).iterrows():
-                                    excel_row = row_idx + 1 
-                                    
-                                    worksheet.write(excel_row, 0, str(row_data['idproduto']), fmt_texto)
-                                    worksheet.write(excel_row, 1, str(row_data['produto']), fmt_texto)
-                                    worksheet.write(excel_row, 2, row_data['Qtd Compra'], fmt_numero)
-                                    
-                                    # Célula em CINZA para o fornecedor preencher
-                                    worksheet.write_blank(excel_row, 3, None, fmt_cinza_input)
-                                    worksheet.write_blank(excel_row, 5, None, fmt_data)
-                                    
-                                    # Fórmula automática: Qtd * Valor Unitário
-                                    linha_excel = excel_row + 1
-                                    formula = f'=C{linha_excel}*D{linha_excel}'
-                                    worksheet.write_formula(excel_row, 4, formula, fmt_total)
-        
-                                # AJUSTES DE LARGURA (Configuração Original)
-                                worksheet.set_column('A:A', 10) # Cód
-                                worksheet.set_column('B:B', 50) # Produto
-                                worksheet.set_column('C:C', 8)  # Qtd
-                                worksheet.set_column('D:D', 15) # Valor Unit
-                                worksheet.set_column('E:E', 18) # Total
-                                
-                                # Filtro Automático
-                                worksheet.autofilter(0, 0, len(df_forn), 4)
-        
-                            excel_bytes = buffer_excel.getvalue()
-        
-                            # --- 2. ASSUNTO E MENSAGEM HTML ---
-                            assunto = "Solicitação de Cotação - Rede Espafer"
-                            mensagem_html = f"""
-                            <div style="font-family: Arial, sans-serif;">
-                                <p>Olá <strong>{forn}</strong>,</p>
-                                <p>Segue solicitação de cotação da Rede Espafer.</p>
-                                <p><strong>Instruções:</strong></p>
-                                <ul>
-                                    <li>Abra a planilha Excel em anexo;</li>
-                                    <li>Preencha as células em <strong>CINZA</strong>;</li>
-                                    <li>Salve e nos responda com este arquivo preenchido.</li>
-                                </ul>
-                                <p>Atenciosamente,<br>
-                                <strong>Compras - Rede Espafer</strong></p>
-                            </div>
-                            """
-        
-                            # --- 3. ENVIO COM O FORMATO DE ANEXO CORRETO ---
-                            sucesso, _ = self.enviar_email_com_anexo(
-                                email_dest,
-                                assunto,
-                                mensagem_html,
-                                [{'nome': f'Cotacao_Espafer_{forn}.xlsx', 'dados': excel_bytes}]
-                            )
-                            
-                            if sucesso:
-                                envios_sucesso += 1
-        
-                    st.success(f"✅ Enviado com sucesso para {envios_sucesso} fornecedores!")
+                st.info("✏️ Preencha os campos abaixo e confirme a resposta.")
+                
+                # Campos de preenchimento rápido e pesquisa
+                col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
+                with col1:
+                    pesquisa_produto = st.text_input("Pesquisar produto", key=f"pesquisa_prod_{pedido_id}")
+                with col2:
+                    valor_global = st.number_input("Preencher Vl. Unit.", min_value=0.0, step=0.01, key=f"valor_global_{pedido_id}")
+                with col3:
+                    imposto_global = st.number_input("Preencher Impostos", min_value=0.0, step=0.01, key=f"imposto_global_{pedido_id}")
+                with col4:
+                    frete_global = st.number_input("Preencher Frete", min_value=0.0, step=0.01, key=f"frete_global_{pedido_id}")
+                
+                col_data, _ = st.columns([2, 8])
+                with col_data:
+                    data_global = st.date_input("Preencher todas as datas", key=f"data_global_{pedido_id}", value=None)
+                
+                # Filtrar itens se houver pesquisa
+                df_itens_filtrado = df_itens.copy()
+                if pesquisa_produto:
+                    df_itens_filtrado = df_itens[
+                        df_itens['codigo_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False) |
+                        df_itens['nome_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False)
+                    ]
+                
+                if df_itens_filtrado.empty:
+                    st.warning("Nenhum produto encontrado com os termos de pesquisa.")
+                    df_itens_filtrado = df_itens  # Mostra todos se não encontrar
+                
+                # Converter prazo_entrega para datetime para usar DateColumn
+                df_itens_filtrado['prazo_entrega'] = pd.to_datetime(df_itens_filtrado['prazo_entrega'], errors='coerce')
+                
+                # Preencher todas as datas se data_global foi informada
+                if data_global:
+                    df_itens_filtrado['prazo_entrega'] = pd.to_datetime(data_global)
+                
+                # Preencher valores globais se informados
+                if valor_global > 0:
+                    df_itens_filtrado['valor_unitario'] = valor_global
+                if imposto_global > 0:
+                    df_itens_filtrado['impostos'] = imposto_global
+                if frete_global > 0:
+                    df_itens_filtrado['frete'] = frete_global
+
+                df_edit = st.data_editor(
+                    df_itens_filtrado,
+                    column_config={
+                        "codigo_produto": st.column_config.TextColumn("Codigo", disabled=True),
+                        "nome_produto":   st.column_config.TextColumn("Produto", disabled=True, width="large"),
+                        "quantidade":     st.column_config.NumberColumn("Qtd",  disabled=True),
+                        "valor_unitario": st.column_config.NumberColumn("✏️ Vl. Unit.", format="R$ %.2f", min_value=0.0),
+                        "impostos":       st.column_config.NumberColumn("✏️ Impostos", format="R$ %.2f", min_value=0.0),
+                        "frete":          st.column_config.NumberColumn("✏️ Frete",    format="R$ %.2f", min_value=0.0),
+                        "prazo_entrega":  st.column_config.DateColumn("✏️ Prazo", format="DD/MM/YYYY"),
+                    },
+                    hide_index=True, use_container_width=True, key=f"editor_{pedido_id}"
+                )
+
+                # Cálculo de Total
+                df_edit['_total'] = (df_edit['quantidade'] * df_edit['valor_unitario'].fillna(0)) + \
+                                     df_edit['impostos'].fillna(0) + df_edit['frete'].fillna(0)
+                total_geral = df_edit['_total'].sum()
+
+                st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
+                st.write("")
+
+                col_pdf, col_confirm, col_fechar = st.columns([1, 1, 1])
+
+                with col_pdf:
+                    # Lógica do PDF
+                    row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
+                    forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
+                    pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_edit)
+                    st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
+
+                with col_confirm:
+                    if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True, key=f"confirm_{pedido_id}"):
+                        if self.db.salvar_resposta_pedido(pedido_id, df_edit):
+                            st.success("Resposta enviada!")
+                            del st.session_state['pedido_aberto']
+                            st.rerun()
+
+                with col_fechar:
+                    if st.button("✖ Fechar", use_container_width=True, key=f"close_{pedido_id}"):
+                        del st.session_state['pedido_aberto']
+                        st.rerun()
 
     def tela_cobertura(self):
-        # 1. CSS Unificado
         st.markdown("""
             <style>
                 [data-baseweb="select"] * { color: #000000 !important; -webkit-text-fill-color: #000000 !important; }
@@ -1244,9 +1667,15 @@ class AppClientePrime:
                     df_processado = df_processado.sort_values(by=['dias_estoque', 'reposicao'], ascending=[True, False])
 
                 df_processado = df_processado.drop_duplicates(subset=['idproduto'], keep='first')
+                
+                # Renomear colunas
+                df_processado = df_processado.rename(columns={
+                    'vol_estoque': 'estoque',
+                    'venda_periodo': f'venda({dias_alvo}D)'
+                })
 
                 # 2. DEFINIÇÃO DE COLUNAS
-                lista_base = ['filial', 'idproduto', 'produto', 'marca', 'vol_estoque', 'venda_periodo', 'dias_estoque', 'reposicao']
+                lista_base = ['filial', 'idproduto', 'produto', 'marca', 'estoque', f'venda({dias_alvo}D)', 'dias_estoque', 'reposicao']
                 ordem_visual = [c for c in lista_base if c != 'reposicao'] if modo_atual == 'SOBRA' else lista_base
 
                 colunas_finais = [c for c in ordem_visual if c in df_processado.columns]
@@ -1262,7 +1691,7 @@ class AppClientePrime:
                         if 'reposicao' in df_final.columns:
                             styler.background_gradient(cmap='Blues', subset=['reposicao'], vmin=0, vmax=100)
 
-                    formatos = {'vol_estoque': '{:.0f} und', 'venda_periodo': '{:.0f} und', 'dias_estoque': '{:.1f} dias'}
+                    formatos = {'estoque': '{:.0f} und', f'venda({dias_alvo}D)': '{:.0f} und', 'dias_estoque': '{:.1f} dias'}
                     if 'reposicao' in df_final.columns and modo_atual != 'SOBRA':
                         formatos['reposicao'] = '{:.0f} und'
                     return styler.format(formatos)
@@ -1277,62 +1706,15 @@ class AppClientePrime:
                 col_espaco, col_acao = st.columns([3, 2])
                 with col_acao:
                     if modo_atual == 'SOBRA':
-                        try:
-                            from reportlab.lib.pagesizes import A4, landscape
-                            from reportlab.lib import colors
-                            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-                            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                            from reportlab.lib.units import cm
-                            import io
-
-                            output = io.BytesIO()
-                            doc = SimpleDocTemplate(output, pagesize=landscape(A4), 
-                                                    rightMargin=1*cm, leftMargin=1*cm, 
-                                                    topMargin=1*cm, bottomMargin=1*cm)
-
-                            elementos = []
-                            estilos = getSampleStyleSheet()
-                            estilo_titulo = ParagraphStyle('T1', parent=estilos['Title'], fontSize=16, spaceAfter=10)
-                            estilo_celula = ParagraphStyle('Cel', parent=estilos['Normal'], fontSize=8, leading=10, wordWrap='CJK')
-                            estilo_header = ParagraphStyle('Hdr', parent=estilos['Normal'], fontSize=9, textColor=colors.whitesmoke, fontName='Helvetica-Bold', alignment=1)
-
-                            elementos.append(Paragraph("RELATÓRIO DE SOBRAS DE ESTOQUE", estilo_titulo))
-                            elementos.append(Paragraph(f"Data: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}", estilos['Normal']))
-                            elementos.append(Spacer(1, 0.5*cm))
-
-                            cols_pdf = [c for c in ['filial', 'idproduto', 'produto', 'marca', 'vol_estoque', 'venda_periodo', 'dias_estoque'] if c in df_final.columns]
-                            
-                            dados_pdf = [[Paragraph(c.upper(), estilo_header) for c in cols_pdf]]
-
-                            for _, row in df_final.iterrows():
-                                linha = []
-                                for col in cols_pdf:
-                                    val = row[col]
-                                    texto = f"{val:.1f}" if isinstance(val, (float, int)) and col not in ['produto', 'filial', 'idproduto'] else str(val)
-                                    linha.append(Paragraph(texto, estilo_celula))
-                                dados_pdf.append(linha)
-
-                            tabela = Table(dados_pdf, repeatRows=1)
-                            tabela.setStyle(TableStyle([
-                                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#0047AB")),
-                                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#F2F2F2")]),
-                            ]))
-
-                            elementos.append(tabela)
-                            doc.build(elementos)
-
-                            st.download_button(
-                                label="📄 Baixar PDF de Sobras",
-                                data=output.getvalue(),
-                                file_name=f"Sobras_{pd.Timestamp.now().strftime('%d%m')}.pdf",
-                                mime="application/pdf",
-                                type="primary",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            st.error(f"Erro ao gerar PDF: {str(e)}")
+                        pdf_bytes = self.gerar_pdf_sobra(df_final, dias_corte, dias_alvo)
+                        st.download_button(
+                            label="📄 Baixar PDF de Sobras",
+                            data=pdf_bytes,
+                            file_name=f"Sobras_{pd.Timestamp.now().strftime('%d%m')}.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
                     
                     else:
                         if st.button("➕ Adicionar TODOS ao Orçamento", type="primary", use_container_width=True):
@@ -1341,7 +1723,7 @@ class AppClientePrime:
                                 df_orc['Qtd Compra'] = df_orc['reposicao']
                             
                             # Correção aqui: adaptando os nomes das colunas para os novos filtros
-                            cols_para_orc = ['idproduto', 'produto', 'vol_estoque', 'marca', 'grupo', 'subgrupo', 'venda_periodo', 'dias_estoque', 'Qtd Compra']
+                            cols_para_orc = ['idproduto', 'produto', 'estoque', 'marca', 'grupo', 'subgrupo', f'venda({dias_alvo}D)', 'dias_estoque', 'Qtd Compra']
                             existentes_orc = [c for c in cols_para_orc if c in df_orc.columns]
                             
                             df_final_orc = df_orc[existentes_orc].copy()
@@ -1361,411 +1743,497 @@ class AppClientePrime:
                 st.warning("Nenhum item encontrado com os filtros selecionados.")
 
     def tela_analise_retorno(self):
-        # 1. Inicializar Estado da Estratégia
         if 'estrategia_ativa' not in st.session_state:
             st.session_state['estrategia_ativa'] = 'menor_preco'
-
-        # 2. CSS ATUALIZADO (Mantido fiel ao seu original)
+        
+        st.markdown('<h1 style="color:black; font-weight:900;">💡 Inteligência de Compra</h1>', unsafe_allow_html=True)
+        
+        # CSS para correção de cores e botões
         st.markdown("""
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
-            
-            /* 1. CONFIGURAÇÕES GERAIS */
-            .stApp { background-color: #FFFFFF !important; }
-            
-            /* 2. SIDEBAR - Ajustada para linha AZUL */
-            section[data-testid="stSidebar"] { 
-                background-color: #121212 !important; 
-                border-right: 2px solid #0047AB !important; 
-            }
-            section[data-testid="stSidebar"] .stButton > button { 
-                background-color: transparent !important; color: #FFFFFF !important; 
-                border: none !important; width: 100%; text-align: left; 
-            }
-            section[data-testid="stSidebar"] div:has(button[kind="primary"]) > div > button { 
-                background-color: #FFFFFF !important; color: #000000 !important; font-weight: 900 !important; 
-            }
-            
-            /* 3. UPLOAD - Mantendo seu estilo de fundo escuro */
-            [data-testid="stFileUploader"] { background-color: #262730; border-radius: 10px; padding: 20px; }
-            [data-testid="stFileUploader"] section div { color: white !important; }
-            [data-testid="stFileUploader"] label p { color: white !important; }
-            [data-testid="stFileUploader"] svg { fill: white !important; }
-            div[data-testid="stUploadedFile"] { background-color: #333333; border: 1px solid #555; border-radius: 8px; }
-            div[data-testid="stUploadedFile"] span { color: white !important; }
-        
-            /* 4. CAIXA DE ESTRATÉGIA */
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                border: 2px solid #AAAAAA !important;
-                border-radius: 8px !important;
-                padding: 20px !important;
-                background-color: #FFFFFF !important;
-            }
-        
-            /* Botão Secundário (Borda Cinza -> Hover Azul) */
-            section[data-testid="stMain"] div.stButton > button[kind="secondary"],
-            div[data-testid="stVerticalBlockBorderWrapper"] button[kind="secondary"] {
-                background-color: #FFFFFF !important;
-                border: 1px solid #CCCCCC !important;
-                color: #000000 !important;
-                font-weight: 600 !important;
-                transition: all 0.2s ease-in-out !important;
-            }
-        
-            /* Efeito Hover */
-            section[data-testid="stMain"] div.stButton > button[kind="secondary"]:hover,
-            div[data-testid="stVerticalBlockBorderWrapper"] button[kind="secondary"]:hover {
-                background-color: #F0F2F6 !important;
-                color: #0047AB !important;
-                border-color: #0047AB !important;
-            }
-        
-            /* Botão Primário (Azul) / Link de Email */
-            div[data-testid="stVerticalBlockBorderWrapper"] button[kind="primary"], .btn-envio-email {
+            <style>
+            .black-text { color: #333333 !important; font-weight: 500; }
+            .pedido-num-bold { color: #0047AB !important; font-weight: 900; }
+            .header-title { color: #000000 !important; font-weight: 800; font-size: 1rem; }
+            h3 { color: #000000 !important; }
+            /* Botão PDF sem hover branco */
+            .stDownloadButton button {
                 background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
-                border: none !important;
                 color: white !important;
-                text-decoration: none !important;
-                padding: 10px 15px;
-                border-radius: 8px;
-                display: block;
-                text-align: center;
-                font-weight: 700;
-                font-size: 14px;
+                border: none !important;
             }
-        
-            /* 6. EXPANDER */
-            div[data-testid="stExpander"] > details > summary {
+            .stDownloadButton button:hover {
                 background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
-                color: white !important; font-weight: 900 !important; border-radius: 8px !important;
+                color: white !important;
+                opacity: 0.9 !important;
+                transform: scale(1.02) !important;
             }
-        </style>
+            /* Tooltip customizado */
+            .tooltip-container {
+                position: relative;
+                display: inline-block;
+                cursor: help;
+            }
+            .tooltip-container .tooltip-text {
+                visibility: hidden;
+                width: 300px;
+                background-color: #0047AB;
+                color: #fff;
+                text-align: left;
+                border-radius: 8px;
+                padding: 10px;
+                position: absolute;
+                z-index: 1000;
+                bottom: 125%;
+                left: 50%;
+                transform: translateX(-50%);
+                opacity: 0;
+                transition: opacity 0.3s;
+                font-size: 0.85rem;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .tooltip-container .tooltip-text::after {
+                content: "";
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                margin-left: -5px;
+                border-width: 5px;
+                border-style: solid;
+                border-color: #0047AB transparent transparent transparent;
+            }
+            .tooltip-container:hover .tooltip-text {
+                visibility: visible;
+                opacity: 1;
+            }
+            /* Ajuste para tooltip na primeira coluna */
+            .tooltip-container.tooltip-left .tooltip-text {
+                left: 0;
+                transform: translateX(0);
+            }
+            .tooltip-container.tooltip-left .tooltip-text::after {
+                left: 20px;
+            }
+            </style>
         """, unsafe_allow_html=True)
-
-        st.markdown("""<style>...</style>""", unsafe_allow_html=True)
-
-        st.markdown('<h1 style="color:#000000; font-weight:900;">Inteligência de Compra</h1>', unsafe_allow_html=True)
         
-        arquivos = st.file_uploader("Selecione as Cotações dos Fornecedores (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+        # Buscar solicitações respondidas
+        cliente_nome = st.session_state.get('nome_usuario', '')
+        df_solicitacoes = self.db.buscar_pedidos_respondidos(cliente_nome)
         
-        if arquivos:
-            try:
-                lista_dfs = []
-                db_forn = st.session_state.get('db_fornecedores', {})
-                fornecedores_cadastrados = list(db_forn.keys())
-                tem_prazo = False
-                pedidos = {}  # Inicializado no escopo correto
-
-                # --- PROCESSAMENTO DOS ARQUIVOS ---
-                for arquivo in arquivos:
-                    df_temp = pd.read_excel(arquivo, engine='openpyxl')
-                    df_temp.columns = [c.strip() for c in df_temp.columns]
-
-                    # Identificação Inteligente do Fornecedor
-                    nome_arquivo_bruto = arquivo.name.upper()
-                    termo_busca = nome_arquivo_bruto.replace('.XLSX', '').replace('.XLS', '')
-                    for r in ['COTACAO', 'PEDIDO', 'ORCAMENTO', '_', '-']:
-                        termo_busca = termo_busca.replace(r, ' ')
-
-                    termo_busca = termo_busca.strip()
-                    fornecedor_identificado = None
-
-                    for f_cadastrado in fornecedores_cadastrados:
-                        f_limpo = f_cadastrado.upper().strip()
-                        if f_limpo in termo_busca or f_limpo.replace(" ", "") in termo_busca.replace(" ", ""):
-                            fornecedor_identificado = f_cadastrado
-                            break
+        if df_solicitacoes.empty:
+            st.info("Nenhuma cotação respondida disponível no momento.")
+            return
+        
+        # Lista de solicitações
+        with st.container(border=True):
+            c_num, c_forn, c_qtd, c_data, c_acao = st.columns([2, 3, 2, 2, 2])
+            c_num.markdown('<div class="header-title">Solicitação</div>', unsafe_allow_html=True)
+            c_forn.markdown('<div class="header-title">Fornecedores</div>', unsafe_allow_html=True)
+            c_qtd.markdown('<div class="header-title">Qtd Itens</div>', unsafe_allow_html=True)
+            c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            
+            for _, row in df_solicitacoes.iterrows():
+                grupo = str(row['grupo_pedido'])
+                qtd_forn = int(row['qtd_fornecedores'])
+                fornecedores = str(row['fornecedores'])
+                data_str = pd.to_datetime(row['data_solicitacao']).strftime('%d/%m/%Y')
+                
+                # Buscar quantidade total de itens
+                df_temp = self.db.buscar_detalhes_comparativo(grupo)
+                qtd_itens = len(df_temp['codigo_produto'].unique()) if not df_temp.empty else 0
+                
+                # Criar lista de números de pedidos para tooltip
+                numeros_pedidos = str(row.get('numeros_pedidos', grupo))
+                lista_pedidos = "<br>".join([f"• {num}" for num in numeros_pedidos.split(", ")])
+                
+                # Criar lista de fornecedores para tooltip
+                lista_fornecedores_completa = "<br>".join([f"• {f}" for f in fornecedores.split(", ")])
+                
+                col_n, col_f, col_q, col_d, col_a = st.columns([2, 3, 2, 2, 2])
+                
+                # Solicitação com tooltip mostrando números dos pedidos
+                col_n.markdown(f'''
+                    <div class="tooltip-container tooltip-left" style="padding-top:8px;">
+                        <div class="pedido-num-bold">#{grupo}</div>
+                        <span class="tooltip-text">
+                            <strong>Números dos Pedidos:</strong><br>
+                            {lista_pedidos}
+                        </span>
+                    </div>
+                ''', unsafe_allow_html=True)
+                
+                # Fornecedores com tooltip
+                col_f.markdown(f'''
+                    <div class="tooltip-container" style="padding-top:8px;">
+                        <div class="black-text" style="font-size:0.85rem;">{fornecedores[:30]}...</div>
+                        <span class="tooltip-text">
+                            <strong>Fornecedores:</strong><br>
+                            {lista_fornecedores_completa}
+                        </span>
+                    </div>
+                ''', unsafe_allow_html=True)
+                
+                # Quantidade de itens sem tooltip
+                col_q.markdown(f'<div class="black-text" style="padding-top:8px;">{qtd_itens} itens</div>', unsafe_allow_html=True)
+                col_d.markdown(f'<div class="black-text" style="padding-top:8px;">{data_str}</div>', unsafe_allow_html=True)
+                
+                solicitacao_aberta = st.session_state.get('solicitacao_aberta')
+                texto_botao = "✖ Fechar" if solicitacao_aberta == grupo else "Analisar"
+                
+                if col_a.button(texto_botao, key=f"sol_{grupo}", use_container_width=True):
+                    if solicitacao_aberta == grupo:
+                        del st.session_state['solicitacao_aberta']
+                    else:
+                        st.session_state['solicitacao_aberta'] = grupo
+                    st.rerun()
+        
+        # Detalhes da solicitação
+        if 'solicitacao_aberta' in st.session_state:
+            grupo = st.session_state['solicitacao_aberta']
+            st.divider()
+            st.markdown(f'<h2 style="color:black; font-weight:900;">Análise Comparativa - #{grupo}</h2>', unsafe_allow_html=True)
+            
+            df_detalhes = self.db.buscar_detalhes_comparativo(grupo)
+            if df_detalhes.empty:
+                st.warning("Nenhum detalhe encontrado.")
+                return
+            
+            # Preparar dados
+            df_detalhes['valor_total'] = (df_detalhes['quantidade'] * df_detalhes['valor_unitario']) + \
+                                          df_detalhes['impostos'].fillna(0) + df_detalhes['frete'].fillna(0)
+            
+            # Pivot de preços
+            index_cols = ['codigo_produto', 'nome_produto', 'quantidade']
+            df_pivot = df_detalhes.pivot_table(
+                index=index_cols, 
+                columns='fornecedor_nome', 
+                values='valor_unitario', 
+                aggfunc='min'
+            ).reset_index()
+            
+            cols_fornecedores = [c for c in df_pivot.columns if c not in index_cols]
+            df_pivot['Melhor Preço'] = df_pivot[cols_fornecedores].min(axis=1)
+            df_pivot['Vencedor'] = df_pivot[cols_fornecedores].idxmin(axis=1)
+            
+            # Exibir comparativo
+            st.markdown(f'<h3 style="color:#000000;">Comparativo de Preços ({len(cols_fornecedores)} Fornecedores)</h3>', unsafe_allow_html=True)
+            
+            def destacar_minimo(row):
+                estilos = ['' for _ in range(len(row))]
+                melhor = row['Melhor Preço']
+                for i, col_nome in enumerate(row.index):
+                    if col_nome in cols_fornecedores and row[col_nome] == melhor and melhor > 0:
+                        estilos[i] = 'background-color: #D4EDDA; color: #155724; font-weight: bold'
+                return estilos
+            
+            st.dataframe(
+                df_pivot.style.apply(destacar_minimo, axis=1).format(
+                    subset=['Melhor Preço'] + cols_fornecedores, precision=2
+                ),
+                use_container_width=True, hide_index=True
+            )
+            
+            # Estratégias
+            with st.container(border=True):
+                st.markdown('<h3 style="color: #000000;">Estratégia de Fechamento</h3>', unsafe_allow_html=True)
+                col1, col2, col3 = st.columns(3)
+                
+                if col1.button("▼ Menor Custo", type="primary" if st.session_state['estrategia_ativa'] == 'menor_preco' else "secondary", use_container_width=True):
+                    st.session_state['estrategia_ativa'] = 'menor_preco'
+                    st.rerun()
+                if col2.button("👤 Fornecedor Único", type="primary" if st.session_state['estrategia_ativa'] == 'fornecedor_unico' else "secondary", use_container_width=True):
+                    st.session_state['estrategia_ativa'] = 'fornecedor_unico'
+                    st.rerun()
+                if col3.button("⏱️ Menor Prazo", type="primary" if st.session_state['estrategia_ativa'] == 'menor_prazo' else "secondary", use_container_width=True):
+                    st.session_state['estrategia_ativa'] = 'menor_prazo'
+                    st.rerun()
+                
+                estrategia = st.session_state['estrategia_ativa']
+                pedidos = {}
+                
+                if estrategia == 'menor_preco':
+                    st.info("💡 **Menor Custo:** Distribui itens pelo menor valor unitário.")
+                    for forn in df_pivot['Vencedor'].dropna().unique():
+                        itens_forn = df_pivot[df_pivot['Vencedor'] == forn][index_cols + ['Melhor Preço']].copy()
+                        itens_forn = itens_forn.rename(columns={'Melhor Preço': 'Valor Unitário'})
+                        pedidos[forn] = itens_forn
+                
+                elif estrategia == 'fornecedor_unico':
+                    escolhido = st.selectbox("Selecione o Fornecedor:", cols_fornecedores)
+                    if escolhido:
+                        st.warning(f"⚠️ Comprando apenas itens de {escolhido}")
+                        itens_forn = df_pivot[df_pivot[escolhido].notna()][index_cols + [escolhido]].copy()
+                        itens_forn = itens_forn.rename(columns={escolhido: 'Valor Unitário'})
+                        pedidos[escolhido] = itens_forn
                         
-                    if not fornecedor_identificado:
-                        fornecedor_identificado = termo_busca.split(' ')[0] 
-
-                    df_temp['Fornecedor'] = fornecedor_identificado
-
-                    # --- Padronização de Colunas ---
-                    # Ordem de prioridade: primeiro identifica colunas mais específicas
-                    # para não confundir "Valor Total" com "Valor Unitário"
-                    cols_renomeadas = {}
-                    for c in df_temp.columns:
-                        c_upper = c.upper().strip()
-
-                        # Valor Total (mais específico — verificar ANTES de Valor Unitário)
-                        if any(x in c_upper for x in ['TOTAL']) and 'Valor Total' not in cols_renomeadas.values():
-                            cols_renomeadas[c] = 'Valor Total'
-
-                        # Valor Unitário (só mapeia se não for "total")
-                        elif any(x in c_upper for x in ['UNIT', 'UNITÁRIO', 'UNITARIO', 'PREÇO', 'PRECO']) and 'Valor Unitário' not in cols_renomeadas.values():
-                            cols_renomeadas[c] = 'Valor Unitário'
-
-                        # Impostos
-                        elif any(x in c_upper for x in ['IMPOSTO', 'IPI', 'ICMS', 'TAX']) and 'Impostos' not in cols_renomeadas.values():
-                            cols_renomeadas[c] = 'Impostos'
-
-                        # Frete
-                        elif any(x in c_upper for x in ['FRETE']) and 'Frete' not in cols_renomeadas.values():
-                            cols_renomeadas[c] = 'Frete'
-
-                        # Prazo
-                        elif any(x in c_upper for x in ['PRAZO', 'ENTREGA']) and 'Prazo' not in cols_renomeadas.values():
-                            cols_renomeadas[c] = 'Prazo'
-                            tem_prazo = True
-
-                    df_temp = df_temp.rename(columns=cols_renomeadas)
-
-                    # Converte colunas numéricas
-                    for col_num in ['Valor Unitário', 'Valor Total', 'Impostos', 'Frete']:
-                        if col_num in df_temp.columns:
-                            df_temp[col_num] = pd.to_numeric(df_temp[col_num], errors='coerce')
-
-                    # Recalcula Valor Total caso a coluna esteja vazia ou ausente
-                    # Fórmula: (Qtd × Vl Unit) + Impostos + Frete  — igual à fórmula do Excel enviado
-                    if 'Valor Total' not in df_temp.columns or df_temp['Valor Total'].isna().all():
-                        qtd = pd.to_numeric(df_temp.get('Quantidade', 1), errors='coerce').fillna(1)
-                        unit = df_temp.get('Valor Unitário', pd.Series(0, index=df_temp.index)).fillna(0)
-                        imp  = df_temp.get('Impostos',    pd.Series(0, index=df_temp.index)).fillna(0)
-                        frete = df_temp.get('Frete',      pd.Series(0, index=df_temp.index)).fillna(0)
-                        df_temp['Valor Total'] = (qtd * unit) + imp + frete
-
-                    if 'Valor Unitário' in df_temp.columns:
-                        lista_dfs.append(df_temp)
-
-                if not lista_dfs:
-                    st.error("Nenhum dado válido encontrado nos arquivos.")
-                    return
-
-                # --- PREPARAÇÃO DOS DADOS ---
-                df_geral = pd.concat(lista_dfs, ignore_index=True)
-                df_geral['Valor Unitário'] = pd.to_numeric(df_geral['Valor Unitário'], errors='coerce')
-                df_geral['Valor Total']    = pd.to_numeric(df_geral['Valor Total'],    errors='coerce')
-                index_cols = ['Código', 'Produto', 'Quantidade']
-
-                # Pivot de Preços (comparativo usa Valor Unitário para comparar preço por unidade)
-                df_pivot = df_geral.pivot_table(index=index_cols, columns='Fornecedor', values='Valor Unitário', aggfunc='min').reset_index()
-                df_pivot.columns = [str(c) for c in df_pivot.columns]
-                cols_fornecedores = [c for c in df_pivot.columns if c not in index_cols]
-
-                # Pivot de Valor Total (para calcular o total real do pedido por fornecedor)
-                df_total_pivot = df_geral.pivot_table(index=index_cols, columns='Fornecedor', values='Valor Total', aggfunc='min').reset_index()
-                df_total_pivot.columns = [str(c) for c in df_total_pivot.columns]
-
-                # Pivot de Prazos
-                df_prazo_pivot = pd.DataFrame()
-                if tem_prazo and 'Prazo' in df_geral.columns:
-                    df_prazo_pivot = df_geral.pivot_table(index=index_cols, columns='Fornecedor', values='Prazo', aggfunc='min').reset_index()
-                    df_prazo_pivot.columns = [str(c) for c in df_prazo_pivot.columns]
-
-                # Vencedores por Preço
-                df_pivot['Melhor Preço'] = df_pivot[cols_fornecedores].min(axis=1)
-                df_pivot['Vencedor_Preco'] = df_pivot[cols_fornecedores].idxmin(axis=1)
-
-                # --- EXIBIÇÃO DO COMPARATIVO ---
-                st.write("---")
-                st.markdown(f"### Comparativo de Preços ({len(cols_fornecedores)} Fornecedores)")
-
-                def destacar_minimo(row):
-                    estilos = ['' for _ in range(len(row))]
-                    melhor = row['Melhor Preço']
-                    for i, col_nome in enumerate(row.index):
-                        if col_nome in cols_fornecedores:
-                            if row[col_nome] == melhor and melhor > 0:
-                                estilos[i] = 'background-color: #D4EDDA; color: #155724; font-weight: bold'
-                    return estilos
-
-                st.dataframe(df_pivot.style.apply(destacar_minimo, axis=1).format(subset=['Melhor Preço'] + cols_fornecedores, precision=2, decimal=',', thousands='.'), use_container_width=True, hide_index=True)
-
-                # --- ESTRATÉGIA DE FECHAMENTO ---
-                with st.container(border=True):
-
-                    st.markdown('<h3 style="color: #000000; margin-top: 0;">Estratégia de Fechamento</h3>', unsafe_allow_html=True)
-                    col1, col2, col3 = st.columns(3)
-
-                    # Seleção de Estratégia
-                    if col1.button("▼ Menor Preço", type="primary" if st.session_state['estrategia_ativa'] == 'menor_preco' else "secondary", use_container_width=True):
-                        st.session_state['estrategia_ativa'] = 'menor_preco'; st.rerun()
-                    if col2.button("👤 Fornecedor Único", type="primary" if st.session_state['estrategia_ativa'] == 'fornecedor_unico' else "secondary", use_container_width=True):
-                        st.session_state['estrategia_ativa'] = 'fornecedor_unico'; st.rerun()
-                    if col3.button("⏱️ Menor Entrega", type="primary" if st.session_state['estrategia_ativa'] == 'menor_prazo' else "secondary", use_container_width=True):
-                        st.session_state['estrategia_ativa'] = 'menor_prazo'; st.rerun()
-
-                    estrategia = st.session_state['estrategia_ativa']
-
-                    if estrategia == 'menor_preco':
-                        st.info("💡 **Menor Preço:** Gera pedidos otimizados pelo menor valor unitário por item.")
-                        for f in df_pivot['Vencedor_Preco'].dropna().unique():
-                            df_f = df_pivot[df_pivot['Vencedor_Preco'] == f][index_cols + ['Melhor Preço']].rename(columns={'Melhor Preço': 'Valor Unitário'}).copy()
-                            # Busca o Valor Total correspondente no pivot de totais
-                            if f in df_total_pivot.columns:
-                                df_f = df_f.merge(df_total_pivot[index_cols + [f]].rename(columns={f: 'Valor Total'}), on=index_cols, how='left')
-                            else:
-                                qtd = pd.to_numeric(df_f['Quantidade'], errors='coerce').fillna(1)
-                                df_f['Valor Total'] = qtd * df_f['Valor Unitário'].fillna(0)
-                            pedidos[f] = df_f
-
-                    elif estrategia == 'fornecedor_unico':
-                        escolhido = st.selectbox("Selecione o Fornecedor:", cols_fornecedores)
-                        if escolhido:
-                            st.warning(f"⚠️ **Atenção:** Comprando somente os itens de {escolhido}.")
-                            cols_sel = [c for c in index_cols + ['Valor Unitário', 'Valor Total'] if c in df_geral.columns]
-                            df_f = df_geral[df_geral['Fornecedor'] == escolhido][cols_sel].dropna(subset=['Valor Unitário']).copy()
-                            if 'Valor Total' not in df_f.columns:
-                                qtd = pd.to_numeric(df_f['Quantidade'], errors='coerce').fillna(1)
-                                df_f['Valor Total'] = qtd * df_f['Valor Unitário'].fillna(0)
-                            pedidos[escolhido] = df_f
-
-                    elif estrategia == 'menor_prazo':
-                        if df_prazo_pivot.empty:
-                            st.error("Coluna de 'Prazo' não encontrada para esta estratégia.")
+                        itens_faltantes = df_pivot[df_pivot[escolhido].isna()]
+                        if not itens_faltantes.empty:
+                            st.warning(f"⚠️ {len(itens_faltantes)} itens não vendidos por {escolhido}. Distribuindo para outros.")
+                            for _, item_row in itens_faltantes.iterrows():
+                                for outro_forn in cols_fornecedores:
+                                    if outro_forn != escolhido and pd.notna(item_row[outro_forn]):
+                                        if outro_forn not in pedidos:
+                                            pedidos[outro_forn] = []
+                                        pedidos[outro_forn].append({
+                                            'codigo_produto': item_row['codigo_produto'],
+                                            'nome_produto': item_row['nome_produto'],
+                                            'quantidade': item_row['quantidade'],
+                                            'Valor Unitário': item_row[outro_forn]
+                                        })
+                                        break
+                
+                elif estrategia == 'menor_prazo':
+                    if 'prazo_entrega' in df_detalhes.columns:
+                        st.success("🚀 **Menor Prazo:** Priorizando entrega mais rápida.")
+                        df_detalhes['prazo_entrega'] = pd.to_datetime(df_detalhes['prazo_entrega'], errors='coerce')
+                        
+                        df_prazo = df_detalhes.pivot_table(
+                            index=index_cols,
+                            columns='fornecedor_nome',
+                            values='prazo_entrega',
+                            aggfunc='min'
+                        ).reset_index()
+                        
+                        # Verificar quais fornecedores estão no pivot de prazo
+                        cols_prazo_disponiveis = [c for c in df_prazo.columns if c in cols_fornecedores]
+                        
+                        if cols_prazo_disponiveis:
+                            df_prazo['Vencedor_Prazo'] = df_prazo[cols_prazo_disponiveis].idxmin(axis=1)
+                            
+                            for forn in cols_prazo_disponiveis:
+                                itens_forn = df_prazo[df_prazo['Vencedor_Prazo'] == forn]
+                                if not itens_forn.empty:
+                                    merged = df_pivot.merge(itens_forn[index_cols], on=index_cols)
+                                    if forn in merged.columns:
+                                        merged = merged[index_cols + [forn]].rename(columns={forn: 'Valor Unitário'})
+                                        pedidos[forn] = merged
                         else:
-                            st.success("🚀 **Menor Entrega:** Priorizando o fornecedor mais rápido para cada item.")
-                            df_prazo_pivot['Vencedor_Prazo'] = df_prazo_pivot[cols_fornecedores].idxmin(axis=1)
-                            for f in cols_fornecedores:
-                                itens_f = df_prazo_pivot[df_prazo_pivot['Vencedor_Prazo'] == f]
-                                if not itens_f.empty:
-                                    df_f = df_pivot.merge(itens_f[index_cols], on=index_cols)[index_cols + [f]].rename(columns={f: 'Valor Unitário'}).copy()
-                                    if f in df_total_pivot.columns:
-                                        df_f = df_f.merge(df_total_pivot[index_cols + [f]].rename(columns={f: 'Valor Total'}), on=index_cols, how='left')
-                                    else:
-                                        qtd = pd.to_numeric(df_f['Quantidade'], errors='coerce').fillna(1)
-                                        df_f['Valor Total'] = qtd * df_f['Valor Unitário'].fillna(0)
-                                    pedidos[f] = df_f
-
-                # --- RENDERIZAÇÃO DOS PEDIDOS E ENVIO ---
+                            st.error("Nenhum fornecedor informou prazo de entrega.")
+                    else:
+                        st.error("Coluna 'Prazo' não encontrada.")
+                
+                # Exibir pedidos
                 if pedidos:
                     st.write("---")
-                    st.markdown('<h3 style="color: #00008b;">Pedidos por Fornecedor</h3>', unsafe_allow_html=True)
-
+                    st.markdown('<h3 style="color: #0047AB;">Pedidos Gerados</h3>', unsafe_allow_html=True)
                     for fornecedor, df_pedido in pedidos.items():
-                        # Usa o Valor Total da planilha (já inclui Qtd × Vl Unit + Impostos + Frete)
-                        # Garante que a coluna existe antes de somar
-                        if 'Valor Total' not in df_pedido.columns or df_pedido['Valor Total'].isna().all():
-                            qtd = pd.to_numeric(df_pedido.get('Quantidade', 1), errors='coerce').fillna(1)
-                            df_pedido['Valor Total'] = qtd * pd.to_numeric(df_pedido.get('Valor Unitário', 0), errors='coerce').fillna(0)
-
-                        total_f = pd.to_numeric(df_pedido['Valor Total'], errors='coerce').fillna(0).sum()
-
-                        with st.expander(f"{fornecedor} — Total: R$ {total_f:,.2f}", expanded=True):
-                            st.dataframe(df_pedido, use_container_width=True, hide_index=True)
-
-                    # Botão de Envio Unificado (Atende a todas as estratégias)
-                    st.write("")
-                    c_espaco, c_btn = st.columns([2, 1])
-                    with c_btn:
-                        if st.button("📨 ENVIAR TODOS OS PEDIDOS", type="primary", use_container_width=True):
-                            with st.spinner("Enviando e-mails..."):
-                                sucessos, erros = 0, []
-                                for f_nome, f_df in pedidos.items():
-                                    try:
-                                        info = db_forn.get(f_nome) or db_forn.get(f_nome.upper())
-                                        if not info or not info.get('email'):
-                                            erros.append(f"{f_nome} (Sem e-mail cadastrado)")
-                                            continue
-                                        
-                                        # 2. Prepara o arquivo Excel em memória
-                                        buffer = io.BytesIO()
-                                        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                                            f_df.to_excel(writer, index=False, sheet_name='Pedido')
-                                        buffer.seek(0)
-                                        
-                                        pdf_bytes = self.gerar_pdf_pedido(f_nome, f_df)
-                                        
-                                        # 3. Define o texto do e-mail
-                                        total_email = pd.to_numeric(f_df['Valor Total'], errors='coerce').fillna(0).sum()
-                                        texto_email = f"""
-                                            <html>
-                                                <body>
-                                                    <p>Olá,</p>
-                                                    <p>Segue em anexo o <b>Pedido de Compra</b> formalizado pela Rede Espafer.</p>
-                                                    <p>Fornecedor: {f_nome}<br>Total: R$ {total_email:,.2f}</p>
-                                                    <p>Favor confirmar o recebimento.</p>
-                                                </body>
-                                            </html>
-                                            """
-                    
-                                        # 4. Chama a função com os nomes de variáveis corretos
-                                        # 'anexos' espera uma lista de dicionários conforme sua def original
-                                        lista_anexos = [{
-                                            'nome': f"Pedido_{f_nome}.pdf",
-                                            'dados': pdf_bytes
-                                        }]
-                    
-                                        sucesso, erro_msg = self.enviar_email_com_anexo(
-                                            destinatario=info['email'], # Pegando o e-mail do dicionário info
-                                            assunto="Pedido de Compra - Rede Espafer",
-                                            mensagem=texto_email,
-                                            anexos=lista_anexos
-                                        )
-                    
-                                        if sucesso: 
-                                            sucessos += 1
-                                        else: 
-                                            erros.append(f"{f_nome} ({erro_msg})")
-                                            
-                                    except Exception as e:
-                                        erros.append(f"{f_nome} ({str(e)})")
+                        if isinstance(df_pedido, list):
+                            df_pedido = pd.DataFrame(df_pedido)
+                        if not df_pedido.empty:
+                            total = (df_pedido['quantidade'] * df_pedido['Valor Unitário']).sum()
+                            with st.expander(f"{fornecedor} — Total: R$ {total:,.2f}", expanded=True):
+                                col_busca, _ = st.columns([3.5, 6.5])
+                                with col_busca:
+                                    busca = st.text_input(f"Buscar produto", key=f"busca_{fornecedor}")
                                 
-                                if sucessos: 
-                                    st.success(f"✅ {sucessos} pedido(s) enviado(s)!")
-                                if erros: 
-                                    for e in erros: 
-                                        st.error(f"❌ Erro em: {e}")
+                                df_exibir = df_pedido.copy()
+                                if busca:
+                                    df_exibir = df_pedido[
+                                        df_pedido['codigo_produto'].astype(str).str.contains(busca, case=False, na=False) |
+                                        df_pedido['nome_produto'].astype(str).str.contains(busca, case=False, na=False)
+                                    ]
+                                
+                                st.dataframe(df_exibir, use_container_width=True, hide_index=True)
+                                
+                                # Botões PDF e Enviar
+                                col_pdf, col_enviar = st.columns(2)
+                                with col_pdf:
+                                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_pedido)
+                                    st.download_button(
+                                        "📄 Baixar PDF",
+                                        pdf_bytes,
+                                        f"Pedido_{fornecedor}.pdf",
+                                        "application/pdf",
+                                        key=f"pdf_{fornecedor}",
+                                        use_container_width=True
+                                    )
+                                with col_enviar:
+                                    if st.button("✅ Enviar Pedido", key=f"enviar_{fornecedor}", type="primary", use_container_width=True):
+                                        # Salvar pedido confirmado no banco
+                                        if 'pedidos_confirmados' not in st.session_state:
+                                            st.session_state['pedidos_confirmados'] = {}
+                                        st.session_state['pedidos_confirmados'][fornecedor] = df_pedido.to_dict('records')
+                                        st.success(f"Pedido enviado para {fornecedor}!")
+                                        st.rerun()
 
-            except Exception as e:
-                st.error(f"Erro ao processar planilhas: {e}")
-                st.exception(e)
-            
-    # Auxiliar para atualizar os dados
-    def aplicar_atualizacao_orcamento(self, df_novo):
-        if st.session_state.dados_orcamento is None or st.session_state.dados_orcamento.empty:
-            st.warning("Não há orçamento aberto para atualizar.")
-            return
 
-        df_novo['Código'] = df_novo['Código'].astype(str)
-        novos_precos = df_novo.set_index('Código')['Valor Unitário'].to_dict()
-        
-        def update_row(row):
-            cod = str(row['idproduto'])
-            if cod in novos_precos:
-                row['Valor Unitário'] = novos_precos[cod]
-                row['Valor Total'] = (row['Qtd Compra'] * row['Valor Unitário'])
-            return row
-            
-        st.session_state.dados_orcamento = st.session_state.dados_orcamento.apply(update_row, axis=1)
-
-
-@st.dialog("Manual de Uso - Sistema de Inteligência", width="large")
+@st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
-    # Estilo para garantir que o texto não herde recuos de código
-    st.markdown("""
-Esta seção detalha o funcionamento de cada etapa do processo de suprimentos.
+    perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+    
+    if perfil in ("ADM", "CLIENTE"):
+        st.markdown("""
+## 📘 Manual do Sistema - Área de Compras
+
+Este manual detalha o funcionamento de cada etapa do processo de suprimentos.
 
 ---
 
-### 1. Aba: Gerar Cobertura (O Coração da Necessidade)
-Esta aba identifica **o quê**, **quanto** e **onde** comprar.
-* **Análise de Giro:** O sistema calcula a velocidade de venda de cada item por filial.
-* **Sugestão Automática:** Com base no estoque atual e no lead time (tempo de entrega), o sistema sugere a quantidade ideal para evitar rupturas sem gerar excesso financeiro.
-* **Filtros Inteligentes:** Você pode filtrar por fornecedor específico, categoria de produto ou curva ABC para focar nos itens de maior impacto.
-* **Ação:** Após revisar as sugestões, os itens selecionados são enviados para a próxima etapa de cotação.
+### 1️⃣ Gerar Cobertura (Análise de Necessidade)
+Identifica **o quê**, **quanto** e **onde** comprar.
 
-### 2. Aba: Gerar Orçamento (A Simulação de Mercado)
-Aqui o sistema simula o cenário de negociação com múltiplos fornecedores.
-* **Cálculo de Impostos:** Aplica automaticamente as regras de ICMS (incluindo ST), IPI e outras taxas dependendo da origem do fornecedor.
-* **Logística:** Permite inserir custos de frete e prazos de pagamento para calcular o desembolso real.
-* **Exportação:** Você pode gerar arquivos individuais para cada fornecedor ou uma planilha mestre em **.csv/Excel** para conferência externa.
-* **Ação:** Consolida os valores propostos para que possam ser comparados tecnicamente.
+**Funcionalidades:**
+* **Análise de Giro:** Calcula a velocidade de venda de cada item por filial
+* **Sugestão Automática:** Baseada no estoque atual e lead time de entrega
+* **Filtros Inteligentes:** Por filial, marca, grupo, subgrupo e produto
+* **Dois Modos de Análise:**
+  - **Sugestão de Compra:** Identifica itens com estoque baixo
+  - **Análise de Sobra:** Identifica itens com excesso de estoque
 
-### 3. Aba: Inteligência de Compra (A Decisão Final)
-A etapa de auditoria e escolha do vencedor da cotação.
-* **Comparativo Side-by-Side:** Exibe uma matriz comparativa onde o sistema destaca o "Melhor Preço" e a "Melhor Condição Geral".
-* **Custo Total (TCO):** Não olha apenas para o preço do produto; soma impostos, fretes e condições financeiras para mostrar quem é realmente o fornecedor mais barato.
-* **Histórico e Tendência:** Permite visualizar se o preço ofertado está acima ou abaixo da última compra realizada.
-* **Ação:** Identifica a oportunidade de economia (Saving) e finaliza o processo para geração do pedido de compra.
+**Como usar:**
+1. Selecione os filtros desejados (filial, marca, grupo, etc.)
+2. Escolha o tipo de análise
+3. Configure os parâmetros (dias de cobertura)
+4. Clique em "GERAR ANÁLISE"
+5. Revise os resultados e adicione ao orçamento
 
 ---
-*Dica: Você pode fechar esta janela clicando no 'X' acima ou clicando em qualquer lugar fora desta caixa.*
-""")
 
-    # Botão de fechar que altera o estado para 'False'
-    if st.button("✅ Sair do Manual e Voltar ao Processo", type="primary", use_container_width=True):
+### 2️⃣ Gerar Orçamento (Preparação de Pedidos)
+Organiza e distribui os itens para cotação com fornecedores.
+
+**Funcionalidades:**
+* **Atribuição Automática:** Sistema sugere fornecedor baseado na marca do produto
+* **Atribuição Manual:** Você pode escolher fornecedor específico
+* **Edição de Quantidades:** Ajuste as quantidades antes de enviar
+* **Filtros e Busca:** Localize produtos rapidamente
+
+**Como usar:**
+1. Os itens vêm da tela "Gerar Cobertura"
+2. Revise os fornecedores sugeridos (coluna editável)
+3. Ajuste as quantidades se necessário
+4. Clique em "REGISTRAR PEDIDO AO FORNECEDOR"
+5. O sistema cria pedidos separados por fornecedor automaticamente
+
+---
+
+### 3️⃣ Inteligência de Compra (Análise Comparativa)
+Compara cotações e identifica a melhor opção de compra.
+
+**Funcionalidades:**
+* **Upload de Cotações:** Envie planilhas dos fornecedores (.xlsx)
+* **Comparativo Automático:** Sistema destaca o melhor preço
+* **Três Estratégias de Fechamento:**
+  - **Menor Preço:** Escolhe o fornecedor mais barato por item
+  - **Fornecedor Único:** Concentra compra em um fornecedor
+  - **Menor Entrega:** Prioriza o prazo de entrega mais rápido
+* **Geração de PDF:** Crie pedidos formatados para envio
+
+**Como usar:**
+1. Faça upload das planilhas de cotação dos fornecedores
+2. O sistema identifica automaticamente cada fornecedor pelo nome do arquivo
+3. Escolha a estratégia de fechamento
+4. Revise os pedidos gerados
+5. Baixe os PDFs para envio aos fornecedores
+
+---
+
+### 💡 Dicas Importantes
+* Mantenha os nomes dos arquivos de cotação com o nome do fornecedor
+* Use os filtros para análises mais precisas
+* Revise sempre as quantidades antes de registrar pedidos
+* O sistema salva automaticamente suas edições
+
+---
+*Você pode fechar esta janela clicando no 'X' ou fora da caixa.*
+        """)
+    
+    elif perfil == "FORNECEDOR":
+        st.markdown("""
+## 📦 Manual do Fornecedor - Sistema de Pedidos
+
+Bem-vindo ao portal de fornecedores da Rede Espafer!
+
+---
+
+### 🎯 Visão Geral
+Como fornecedor, você tem acesso à área de **Pedidos**, onde pode:
+* Visualizar pedidos enviados pelo Cliente
+* Preencher valores unitários, impostos e frete
+* Informar prazos de entrega
+* Enviar sua cotação de volta
+
+---
+
+### 📋 Como Responder um Pedido
+
+**Passo 1: Visualizar Pedidos**
+* Na tela inicial, você verá todos os pedidos destinados a você
+* Cada pedido mostra:
+  - Número do pedido
+  - Cliente solicitante
+  - Status (Pendente/Enviado)
+  - Data de criação
+
+**Passo 2: Abrir Detalhes**
+* Clique no botão "Ver / Responder" do pedido desejado
+* O sistema abrirá os detalhes com todos os itens solicitados
+
+**Passo 3: Preencher Informações**
+Campos editáveis (marcados com ✏️):
+* **Valor Unitário:** Preço por unidade do produto
+* **Impostos:** Valor total de impostos (IPI, ICMS, etc.)
+* **Frete:** Custo de transporte
+* **Prazo de Entrega:** Data prevista para entrega
+
+**Recursos úteis:**
+* **Pesquisar Produto:** Localize itens por código ou nome
+* **Preencher Todas as Datas:** Aplica a mesma data de entrega para todos os itens
+
+**Passo 4: Revisar e Enviar**
+* O sistema calcula automaticamente o **Total** do pedido
+* Revise todos os valores preenchidos
+* Clique em "✅ Confirmar Resposta" para enviar
+* Você pode baixar um PDF do pedido antes de enviar
+
+---
+
+### ⚠️ Informações Importantes
+
+**Status dos Pedidos:**
+* 🟡 **Pendente:** Aguardando sua resposta
+* 🟢 **Enviado:** Cotação já foi enviada ao cliente
+
+**Dicas:**
+* Preencha todos os campos para uma cotação completa
+* Use a busca para localizar produtos rapidamente
+* O botão "Preencher todas as datas" economiza tempo
+* Você pode fechar e voltar ao pedido antes de confirmar
+* Após confirmar, o status muda para "Enviado"
+
+**Cálculo do Total:**
+```
+Total = (Quantidade × Valor Unitário) + Impostos + Frete
+```
+
+---
+
+### 📄 Baixar PDF
+Você pode gerar um PDF do pedido a qualquer momento:
+* Útil para conferência interna
+* Pode ser usado como comprovante
+* Clique em "📄 Baixar PDF" antes ou depois de confirmar
+
+---
+
+### 🆘 Precisa de Ajuda?
+Em caso de dúvidas sobre:
+* Produtos específicos
+* Quantidades solicitadas
+* Prazos de entrega
+
+Entre em contato com o departamento de compras da Rede Espafer.
+
+---
+
+*Você pode fechar esta janela clicando no 'X' ou fora da caixa.*
+        """)
+    
+    col_fechar = st.columns(1)[0]
+    if col_fechar.button("✅ Fechar Manual", type="primary", use_container_width=True, key="btn_fechar_manual_dialog"):
         st.session_state.show_manual = False
         st.rerun()
  
@@ -1824,8 +2292,9 @@ def verificar_login():
                 admin_senha = admin_backup.get("senha", "")
 
                 if admin_user and admin_senha and user_input == admin_user and pass_input == admin_senha:
-                    st.session_state.logado = True
-                    st.session_state.nome_usuario = "Espafer"
+                    st.session_state.logado        = True
+                    st.session_state.nome_usuario  = "Espafer"
+                    st.session_state.perfil_usuario = "ADM"
                     st.session_state.tentativas_login = 0
                     logger.info("Login de emergência utilizado")
                     st.rerun()
@@ -1836,12 +2305,18 @@ def verificar_login():
                     dados_usuario = db.validar_usuario(user_input, pass_input)
 
                     if dados_usuario:
-                        st.session_state.logado = True
-                        st.session_state.nome_usuario = dados_usuario[1]
+                        st.session_state.logado         = True
+                        st.session_state.nome_usuario   = dados_usuario[1]
+                        st.session_state.perfil_usuario = dados_usuario[2]   # ADM / CLIENTE / FORNECEDOR
                         st.session_state.tentativas_login = 0
-                        st.session_state.bloqueado_ate = None
+                        st.session_state.bloqueado_ate  = None
+                        # Define menu inicial conforme perfil
+                        if dados_usuario[2] == "FORNECEDOR":
+                            st.session_state.menu_ativo = "Orçamento"
+                        else:
+                            st.session_state.menu_ativo = "Gerar Cobertura"
                         st.success(f"Bem-vindo, {dados_usuario[1]}!")
-                        logger.info(f"Login bem-sucedido: {user_input}")
+                        logger.info(f"Login bem-sucedido: {user_input} — perfil: {dados_usuario[2]}")
                         st.rerun()
                     else:
                         st.session_state.tentativas_login += 1
@@ -1868,75 +2343,57 @@ def logout():
         
 # --- EXECUÇÃO FINAL ---
 if __name__ == "__main__":
-    # 1. Primeiro valida o login
     if not verificar_login():
         st.stop()
 
-    app = AppClientePrime()
-    app.render_sidebar()  
+    app    = AppClientePrime()
+    perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+    app.render_sidebar()
+
+    menu = st.session_state.menu_ativo
+
+    # ── Roteamento por perfil ────────────────────────────────────
+    if menu == "Orçamento":
+        if perfil in ("ADM", "FORNECEDOR"):
+            app.tela_pedidos_fornecedor()
+        else:
+            st.warning("Você não tem permissão para acessar esta área.")
     
-    # 2. Renderização das telas centrais
-    if st.session_state.menu_ativo == "Gerar Cobertura":
-        app.tela_cobertura()
-    elif st.session_state.menu_ativo == "Gerar Orçamento":
-        app.tela_orcamento()
-    elif st.session_state.menu_ativo == "Inteligência de Compra":
-        app.tela_analise_retorno()
-        
-    # --- CSS PARA FIXAR O BLOCO NO RODAPÉ (SEM BORDAS) ---
+    elif menu == "Pedidos":
+        if perfil in ("ADM", "FORNECEDOR"):
+            app.tela_pedidos_confirmados()
+        else:
+            st.warning("Você não tem permissão para acessar esta área.")
+
+    elif menu in ("Gerar Cobertura", "Gerar Orçamento", "Inteligência de Compra"):
+        if perfil not in ("ADM", "CLIENTE"):
+            st.warning("Você não tem permissão para acessar esta área.")
+            st.stop()
+        if menu == "Gerar Cobertura":
+            app.tela_cobertura()
+        elif menu == "Gerar Orçamento":
+            app.tela_orcamento()
+        elif menu == "Inteligência de Compra":
+            app.tela_analise_retorno()
+
+    # ── Rodapé da sidebar ────────────────────────────────────────
     st.sidebar.markdown("""
         <style>
-            /* Espaço para o menu não bater no rodapé */
-            [data-testid="stSidebarContent"] { padding-bottom: 180px !important; }
-
-            /* Localização do Container no rodapé */
+            [data-testid="stSidebarContent"] { padding-bottom: 100px !important; }
             div.element-container:has(#ancora-rodape-limpo) + div {
-                position: absolute !important;
-                bottom: 30px !important;
-                left: 0 !important;
-                right: 0 !important;
-                width: 85% !important;
-                margin: auto !important;
-                background-color: transparent !important; /* Remove fundo */
-                border: none !important; /* Remove borda */
-                z-index: 9999;
-            }
-            
-            /* Alinhamento vertical do nome com o botão */
-            [data-testid="stHorizontalBlock"] {
-                align-items: center !important;
-            }
-
-            /* Estilo do nome do usuário */
-            .user-label {
-                color: #FFFFFF;
-                font-size: 0,85rem;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
+                position: absolute !important; bottom: 30px !important;
+                left: 0 !important; right: 0 !important; width: 85% !important;
+                margin: auto !important; background-color: transparent !important;
+                border: none !important; z-index: 9999;
             }
         </style>
         <div id="ancora-rodape-limpo"></div>
     """, unsafe_allow_html=True)
 
-    # TUDO O QUE ESTIVER NESTE CONTAINER FICARÁ JUNTO NO RODAPÉ
     with st.sidebar.container():
-        # Linha do Usuário e Sair
-        c_user, c_sair = st.columns([2.2, 1])
-        
-        # Nome do usuário alinhado
-        c_user.markdown(f'<div class="user-label">👤 {st.session_state.nome_usuario}</div>', unsafe_allow_html=True)
-        
-        # Botão sair menor e discreto
-        if c_sair.button("➜]", key="btn_logout_final", use_container_width=True):
-            st.session_state.logado = False
-            st.rerun()
-        
-        # Botão do Manual logo abaixo
         if st.button("📖 Manual do Usuário", key="btn_manual_v6_final", use_container_width=True):
             st.session_state.show_manual = True
-            st.rerun()
 
-    # Exibição do manual (modal)
     if st.session_state.get('show_manual', False):
-        app.exibir_manual_usuario()
+        exibir_manual()
+        st.session_state.show_manual = False
