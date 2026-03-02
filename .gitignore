@@ -19,3 +19,4 @@ creds.json
 *.csv
 *.xlsx
 /backup
+backup1/app_Espafer.py
