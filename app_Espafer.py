@@ -487,7 +487,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_filiais(_self):
         if not _self.creds: return []
         conn = None
@@ -502,7 +502,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
         
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_marcas(_self, filial=None):
         if not _self.creds: return []
         conn = None
@@ -518,7 +518,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_grupos(_self, filial=None, marca=None):
         if not _self.creds: return []
         conn = None
@@ -537,7 +537,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_subgrupos(_self, filial=None, marca=None, grupo=None):
         if not _self.creds: return []
         conn = None
@@ -558,7 +558,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_subgrupos1(_self, filial=None, marca=None, grupo=None, subgrupo=None):
         if not _self.creds: return []
         conn = None
@@ -583,7 +583,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def buscar_produtos(_self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
         if not _self.creds: return []
         conn = None
@@ -902,7 +902,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=300)
+    @st.cache_data(ttl=1800, show_spinner=False)
     def buscar_fornecedores(_self):
         if not _self.creds: return pd.DataFrame()
         conn = None
@@ -1040,7 +1040,7 @@ class DatabaseManager:
                     TRIM(CAST(c.codacessog AS TEXT)) as "idproduto",
                     c.nome as produto,
                     c.marca,
-                    f.fornecedor,
+                    COALESCE(f.fornecedor, f2.fornecedor) as fornecedor,
                     c.nome_grupo as grupo,
                     c.nome_sub_grupo as subgrupo,
                     c.nome_sub_grupo1 as subgrupo1,
@@ -1056,6 +1056,7 @@ class DatabaseManager:
                 LEFT JOIN est e ON TRIM(CAST(c.codigo AS TEXT)) = e.cod
                 LEFT JOIN ven v ON TRIM(CAST(c.codacessog AS TEXT)) = v.cod
                 LEFT JOIN fornecedores f ON TRIM(UPPER(c.marca)) = TRIM(UPPER(f.marca))
+                LEFT JOIN fornecedores f2 ON (c.marca IS NULL OR TRIM(c.marca) = '') AND TRIM(UPPER(f2.marca)) = ''
             )
             SELECT {colunas_selecionadas} FROM (
                 SELECT *, {rep_sql} as reposicao FROM base
@@ -1125,16 +1126,26 @@ class AppClientePrime:
     def inicializar_estado(self):
         perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
         menu_default = "Pedidos" if perfil == "FORNECEDOR" else "Gerar Cobertura"
-        if 'menu_ativo' not in st.session_state: st.session_state.menu_ativo = menu_default
-        if 'modo_analise_atual' not in st.session_state: st.session_state.modo_analise_atual = "COMPRA"
-        if 'tentativas_login' not in st.session_state: st.session_state.tentativas_login = 0
-        if 'perfil_usuario' not in st.session_state: st.session_state.perfil_usuario = "CLIENTE"
-        if 'db_fornecedores' not in st.session_state: st.session_state.db_fornecedores = {}
-        if 'itens_removidos' not in st.session_state: st.session_state.itens_removidos = []
-        if 'dados_orcamento' not in st.session_state: st.session_state.dados_orcamento = None
-        if 'df_analise_cache' not in st.session_state: st.session_state.df_analise_cache = pd.DataFrame()  # FIX: evita KeyError na primeira execução
-        if 'filtros_anteriores' not in st.session_state: st.session_state.filtros_anteriores = None
-        if 'filtrar_sem_fornecedor' not in st.session_state: st.session_state.filtrar_sem_fornecedor = False
+        
+        # Inicialização consolidada de estados
+        estados_default = {
+            'menu_ativo': menu_default,
+            'modo_analise_atual': "COMPRA",
+            'tentativas_login': 0,
+            'perfil_usuario': "CLIENTE",
+            'db_fornecedores': {},
+            'itens_removidos': [],
+            'dados_orcamento': None,
+            'df_analise_cache': pd.DataFrame(),
+            'filtros_anteriores': None,
+            'filtrar_sem_fornecedor': False,
+            'cache_qtd_itens': {},
+            'pedidos_com_alteracao': set()
+        }
+        
+        for key, default_value in estados_default.items():
+            if key not in st.session_state:
+                st.session_state[key] = default_value
 
     def aplicar_estilos(self):
         st.markdown("""
