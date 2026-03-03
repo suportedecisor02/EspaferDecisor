@@ -3802,7 +3802,6 @@ def verificar_login():
                     st.session_state.nome_usuario  = "Espafer"
                     st.session_state.perfil_usuario = "ADM"
                     st.session_state.tentativas_login = 0
-                    st.session_state.cache_carregado = False
                     logger.info("Login de emergência utilizado")
                     st.rerun()
 
@@ -3817,7 +3816,6 @@ def verificar_login():
                         st.session_state.perfil_usuario = dados_usuario[2]   # ADM / CLIENTE / FORNECEDOR
                         st.session_state.tentativas_login = 0
                         st.session_state.bloqueado_ate  = None
-                        st.session_state.cache_carregado = False
                         
                         # Limpar cache de análises e filtros ao fazer login
                         st.session_state.df_analise_cache = pd.DataFrame()
@@ -3851,31 +3849,6 @@ def verificar_login():
 
     return False
 
-def precarregar_cache(db, nome_usuario, perfil):
-    """Pré-carrega todos os dados no cache após login"""
-    try:
-        # Cache de filtros básicos
-        db.buscar_filiais()
-        db.buscar_marcas()
-        db.buscar_grupos()
-        db.buscar_subgrupos()
-        db.buscar_subgrupos1()
-        db.buscar_fornecedores()
-        
-        # Cache específico por perfil
-        if perfil in ("ADM", "CLIENTE"):
-            db.buscar_pedidos_cliente(nome_usuario)
-            db.buscar_pedidos_respondidos(nome_usuario)
-            db.buscar_notificacoes(nome_usuario, perfil)
-        elif perfil == "FORNECEDOR":
-            db.buscar_pedidos_fornecedor(nome_usuario)
-            db.buscar_pedidos_confirmados(nome_usuario)
-            db.buscar_notificacoes(nome_usuario, perfil)
-        
-        logger.info(f"Cache pré-carregado com sucesso para {nome_usuario}")
-    except Exception as e:
-        logger.error(f"Erro ao pré-carregar cache: {e}")
-
 def logout():
     st.session_state.logado = False
     st.rerun()
@@ -3885,65 +3858,15 @@ if __name__ == "__main__":
     if not verificar_login():
         st.stop()
 
-    # Tela de carregamento inicial - BLOQUEIA TUDO até carregar
-    if not st.session_state.get('cache_carregado', False):
-        # Esconde sidebar durante carregamento
-        st.markdown("""
-            <style>
-            [data-testid="stSidebar"] { display: none !important; }
-            .loading-container {
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100vh;
-                background: linear-gradient(135deg, #0047AB 0%, #000000 100%);
-            }
-            .loading-logo {
-                font-size: 4rem;
-                font-weight: 900;
-                color: #FFFFFF;
-                margin-bottom: 30px;
-                text-shadow: 0 4px 8px rgba(0,0,0,0.3);
-            }
-            .loading-text {
-                font-size: 1.3rem;
-                color: #FFFFFF;
-                margin-bottom: 20px;
-                opacity: 0.9;
-            }
-            .loading-spinner {
-                border: 4px solid rgba(255,255,255,0.3);
-                border-top: 4px solid #FFFFFF;
-                border-radius: 50%;
-                width: 50px;
-                height: 50px;
-                animation: spin 1s linear infinite;
-            }
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-            </style>
-            <div class="loading-container">
-                <div class="loading-logo">REDE ESPAFER</div>
-                <div class="loading-text">Carregando dados do sistema...</div>
-                <div class="loading-spinner"></div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Carrega TUDO em background
-        db = DatabaseManager()
-        nome_usuario = st.session_state.get('nome_usuario', '')
-        perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
-        precarregar_cache(db, nome_usuario, perfil)
-        st.session_state.cache_carregado = True
-        time.sleep(0.8)  # Feedback visual
-        st.rerun()
-
-    # Sistema só renderiza DEPOIS do cache carregado
     app    = AppClientePrime()
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+    nome_usuario = st.session_state.get('nome_usuario', '')
+    
+    # Pré-carregar dados básicos em background
+    app.db.buscar_filiais()
+    app.db.buscar_fornecedores()
+    app.db.buscar_notificacoes(nome_usuario, perfil)
+    
     app.render_sidebar()
 
     menu = st.session_state.menu_ativo
@@ -3951,12 +3874,16 @@ if __name__ == "__main__":
     # ── Roteamento por perfil ────────────────────────────────────
     if menu == "Orçamento":
         if perfil in ("ADM", "FORNECEDOR"):
+            # Pré-carregar dados do menu
+            app.db.buscar_pedidos_fornecedor(nome_usuario if perfil == "FORNECEDOR" else None)
             app.tela_pedidos_fornecedor()
         else:
             st.warning("Você não tem permissão para acessar esta área.")
     
     elif menu == "Pedidos":
         if perfil in ("ADM", "FORNECEDOR"):
+            # Pré-carregar dados do menu
+            app.db.buscar_pedidos_confirmados(nome_usuario if perfil == "FORNECEDOR" else None)
             app.tela_pedidos_confirmados()
         else:
             st.warning("Você não tem permissão para acessar esta área.")
@@ -3966,10 +3893,18 @@ if __name__ == "__main__":
             st.warning("Você não tem permissão para acessar esta área.")
             st.stop()
         if menu == "Gerar Cobertura":
+            # Pré-carregar dados do menu
+            app.db.buscar_marcas()
+            app.db.buscar_grupos()
+            app.db.buscar_subgrupos()
             app.tela_cobertura()
         elif menu == "Inteligência de Compra":
+            # Pré-carregar dados do menu
+            app.db.buscar_pedidos_respondidos(nome_usuario)
             app.tela_analise_retorno()
         elif menu == "Meus Pedidos":
+            # Pré-carregar dados do menu
+            app.db.buscar_pedidos_cliente(nome_usuario)
             app.tela_visualizar_pedidos_cliente()
 
     # ── Rodapé da sidebar ────────────────────────────────────────
