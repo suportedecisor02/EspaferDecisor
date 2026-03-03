@@ -1361,12 +1361,18 @@ class AppClientePrime:
                     for opt in opcoes:
                         tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
                         if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
+                            # Limpar caches ao trocar de menu
+                            if st.session_state.menu_ativo != opt:
+                                keys_to_clear = [k for k in st.session_state.keys() if k.startswith('lista_') or k.startswith('cache_') or k.startswith('detalhes_')]
+                                for key in keys_to_clear:
+                                    del st.session_state[key]
+                                if 'pedido_aberto' in st.session_state:
+                                    del st.session_state['pedido_aberto']
+                                if 'pedido_confirmado_aberto' in st.session_state:
+                                    del st.session_state['pedido_confirmado_aberto']
+                                if 'solicitacao_aberta' in st.session_state:
+                                    del st.session_state['solicitacao_aberta']
                             st.session_state.menu_ativo = opt
-                            # Limpar estados de pedidos abertos ao trocar de aba
-                            if 'pedido_aberto' in st.session_state:
-                                del st.session_state['pedido_aberto']
-                            if 'pedido_confirmado_aberto' in st.session_state:
-                                del st.session_state['pedido_confirmado_aberto']
                             st.rerun()
 
             if perfil in ("ADM", "FORNECEDOR"):
@@ -1375,12 +1381,16 @@ class AppClientePrime:
                     for opt in opcoes_forn:
                         tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
                         if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
+                            # Limpar caches ao trocar de menu
+                            if st.session_state.menu_ativo != opt:
+                                keys_to_clear = [k for k in st.session_state.keys() if k.startswith('lista_') or k.startswith('cache_')]
+                                for key in keys_to_clear:
+                                    del st.session_state[key]
+                                if 'pedido_aberto' in st.session_state:
+                                    del st.session_state['pedido_aberto']
+                                if 'pedido_confirmado_aberto' in st.session_state:
+                                    del st.session_state['pedido_confirmado_aberto']
                             st.session_state.menu_ativo = opt
-                            # Limpar estados de pedidos abertos ao trocar de aba
-                            if 'pedido_aberto' in st.session_state:
-                                del st.session_state['pedido_aberto']
-                            if 'pedido_confirmado_aberto' in st.session_state:
-                                del st.session_state['pedido_confirmado_aberto']
                             st.rerun()
 
             # --- FILTROS DINÂMICOS (só aparece para Cliente/ADM com dados) ---
@@ -2208,7 +2218,7 @@ class AppClientePrime:
                 ''', unsafe_allow_html=True)
                 col_d.markdown(f'<div class="black-text" style="padding-top:8px;">{data_str}</div>', unsafe_allow_html=True)
                 
-                texto_botao = "✖ Fechar" if esta_aberto else "Ver / Responder"
+                texto_botao = "✖ Fechar" if esta_aberto else ("Visualizar" if status == "Enviado" else "Ver / Responder")
                 
                 if col_a.button(texto_botao, key=f"ver_{pedido_id}", use_container_width=True):
                     if pedido_aberto == pedido_id:
@@ -2236,6 +2246,10 @@ class AppClientePrime:
     def _renderizar_detalhes_pedido_fornecedor(self, pedido_id, df_pedidos, nome_usuario, perfil):
         if 'pedido_aberto' in st.session_state:
             num = st.session_state.get('pedido_num', pedido_id)
+            
+            # Buscar status do pedido
+            row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
+            status_pedido = row_pedido['status'].values[0] if not row_pedido.empty else "Pendente"
             
             if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
                 del st.session_state['pedido_aberto']
@@ -2268,130 +2282,190 @@ class AppClientePrime:
             if df_itens.empty:
                 st.warning("Nenhum item encontrado para este pedido.")
             else:
-                st.info("✏️ Preencha os campos abaixo e confirme a resposta.")
+                # MODO VISUALIZAÇÃO (Status Enviado)
+                if status_pedido == "Enviado":
+                    st.info("👁️ Orçamento já enviado. Visualização somente leitura.")
+                    
+                    # Buscar observação
+                    try:
+                        with self.db.get_connection() as conn:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                SELECT observacao FROM pedidos_vendas WHERE id = %s
+                            """, (pedido_id,))
+                            result = cur.fetchone()
+                            observacao_salva = result[0] if result and result[0] else ""
+                    except Exception as e:
+                        logger.error(f"Erro ao buscar observação: {e}")
+                        observacao_salva = ""
+                    
+                    # Exibir tabela somente leitura
+                    st.dataframe(
+                        df_itens[['codigo_produto', 'nome_produto', 'quantidade', 'valor_unitario', 'impostos', 'frete', 'prazo_entrega']],
+                        column_config={
+                            "codigo_produto": "Código",
+                            "nome_produto": "Produto",
+                            "quantidade": "Qtd",
+                            "valor_unitario": st.column_config.NumberColumn("Vl. Unit.", format="R$ %.2f"),
+                            "impostos": st.column_config.NumberColumn("Impostos", format="R$ %.2f"),
+                            "frete": "Frete",
+                            "prazo_entrega": "Prazo"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Cálculo de Total
+                    df_itens['_total'] = (df_itens['quantidade'] * df_itens['valor_unitario'].fillna(0)) + df_itens['impostos'].fillna(0)
+                    total_geral = df_itens['_total'].sum()
+                    st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
+                    st.write("")
+                    
+                    # Exibir observação (somente leitura)
+                    if observacao_salva:
+                        st.info(f"📝 **Observação:** {observacao_salva}")
+                    
+                    # Botões: PDF e Fechar
+                    col_pdf, col_fechar = st.columns(2)
+                    with col_pdf:
+                        forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
+                        pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_itens)
+                        st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
+                    with col_fechar:
+                        if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_view_{pedido_id}"):
+                            del st.session_state['pedido_aberto']
+                            cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
+                            if cache_key_pedidos in st.session_state:
+                                del st.session_state[cache_key_pedidos]
+                            st.rerun()
                 
-                # Campos de preenchimento rápido e pesquisa
-                col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
-                with col1:
-                    pesquisa_produto = st.text_input("Pesquisar produto", key=f"pesquisa_prod_{pedido_id}")
-                with col2:
-                    valor_global = st.number_input("Preencher Vl. Unit.", min_value=0.0, step=0.01, key=f"valor_global_{pedido_id}")
-                with col3:
-                    imposto_global = st.number_input("Preencher Impostos", min_value=0.0, step=0.01, key=f"imposto_global_{pedido_id}")
-                with col4:
-                    frete_global = st.selectbox("Preencher Frete", ["", "CIF", "FOB"], key=f"frete_global_{pedido_id}")
+                # MODO EDIÇÃO (Status Pendente)
+                else:
+                    st.info("✏️ Preencha os campos abaixo e confirme a resposta.")
+                    
+                    # Campos de preenchimento rápido e pesquisa
+                    col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
+                    with col1:
+                        pesquisa_produto = st.text_input("Pesquisar produto", key=f"pesquisa_prod_{pedido_id}")
+                    with col2:
+                        valor_global = st.number_input("Preencher Vl. Unit.", min_value=0.0, step=0.01, key=f"valor_global_{pedido_id}")
+                    with col3:
+                        imposto_global = st.number_input("Preencher Impostos", min_value=0.0, step=0.01, key=f"imposto_global_{pedido_id}")
+                    with col4:
+                        frete_global = st.selectbox("Preencher Frete", ["", "CIF", "FOB"], key=f"frete_global_{pedido_id}")
+                    
+                    col_data, _ = st.columns([2, 8])
+                    with col_data:
+                        data_global = st.date_input("Preencher todas as datas", key=f"data_global_{pedido_id}", value=None)
                 
-                col_data, _ = st.columns([2, 8])
-                with col_data:
-                    data_global = st.date_input("Preencher todas as datas", key=f"data_global_{pedido_id}", value=None)
-                
-                # Filtrar itens se houver pesquisa
-                df_itens_filtrado = df_itens.copy()
-                if pesquisa_produto:
-                    df_itens_filtrado = df_itens[
-                        df_itens['codigo_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False) |
-                        df_itens['nome_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False)
-                    ]
-                
-                if df_itens_filtrado.empty:
-                    st.warning("Nenhum produto encontrado com os termos de pesquisa.")
-                    df_itens_filtrado = df_itens  # Mostra todos se não encontrar
-                
-                # Converter prazo_entrega para datetime para usar DateColumn
-                df_itens_filtrado['prazo_entrega'] = pd.to_datetime(df_itens_filtrado['prazo_entrega'], errors='coerce')
-                
-                # Preencher todas as datas se data_global foi informada
-                if data_global:
-                    df_itens_filtrado['prazo_entrega'] = pd.to_datetime(data_global)
-                
-                # Preencher valores globais se informados
-                if valor_global > 0:
-                    df_itens_filtrado['valor_unitario'] = valor_global
-                if imposto_global > 0:
-                    df_itens_filtrado['impostos'] = imposto_global
-                if frete_global:
-                    df_itens_filtrado['frete'] = frete_global
+                    
+                    # Filtrar itens se houver pesquisa
+                    df_itens_filtrado = df_itens.copy()
+                    if pesquisa_produto:
+                        df_itens_filtrado = df_itens[
+                            df_itens['codigo_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False) |
+                            df_itens['nome_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False)
+                        ]
+                    
+                    if df_itens_filtrado.empty:
+                        st.warning("Nenhum produto encontrado com os termos de pesquisa.")
+                        df_itens_filtrado = df_itens  # Mostra todos se não encontrar
+                    
+                    # Converter prazo_entrega para datetime para usar DateColumn
+                    df_itens_filtrado['prazo_entrega'] = pd.to_datetime(df_itens_filtrado['prazo_entrega'], errors='coerce')
+                    
+                    # Preencher todas as datas se data_global foi informada
+                    if data_global:
+                        df_itens_filtrado['prazo_entrega'] = pd.to_datetime(data_global)
+                    
+                    # Preencher valores globais se informados
+                    if valor_global > 0:
+                        df_itens_filtrado['valor_unitario'] = valor_global
+                    if imposto_global > 0:
+                        df_itens_filtrado['impostos'] = imposto_global
+                    if frete_global:
+                        df_itens_filtrado['frete'] = frete_global
 
-                df_edit = st.data_editor(
-                    df_itens_filtrado,
-                    column_config={
-                        "id": None,
-                        "codigo_produto": st.column_config.TextColumn("Codigo", disabled=True),
-                        "nome_produto":   st.column_config.TextColumn("Produto", disabled=True, width="large"),
-                        "quantidade":     st.column_config.NumberColumn("Qtd",  disabled=True),
-                        "valor_unitario": st.column_config.NumberColumn("✏️ Vl. Unit.", format="R$ %.2f", min_value=0.0),
-                        "impostos":       st.column_config.NumberColumn("✏️ Impostos", format="R$ %.2f", min_value=0.0),
-                        "frete":          st.column_config.SelectboxColumn("✏️ Frete", options=["CIF", "FOB"]),
-                        "prazo_entrega":  st.column_config.DateColumn("✏️ Prazo", format="DD/MM/YYYY"),
-                    },
-                    hide_index=True, use_container_width=True, key=f"editor_{pedido_id}"
-                )
+                    df_edit = st.data_editor(
+                        df_itens_filtrado,
+                        column_config={
+                            "id": None,
+                            "codigo_produto": st.column_config.TextColumn("Codigo", disabled=True),
+                            "nome_produto":   st.column_config.TextColumn("Produto", disabled=True, width="large"),
+                            "quantidade":     st.column_config.NumberColumn("Qtd",  disabled=True),
+                            "valor_unitario": st.column_config.NumberColumn("✏️ Vl. Unit.", format="R$ %.2f", min_value=0.0),
+                            "impostos":       st.column_config.NumberColumn("✏️ Impostos", format="R$ %.2f", min_value=0.0),
+                            "frete":          st.column_config.SelectboxColumn("✏️ Frete", options=["CIF", "FOB"]),
+                            "prazo_entrega":  st.column_config.DateColumn("✏️ Prazo", format="DD/MM/YYYY"),
+                        },
+                        hide_index=True, use_container_width=True, key=f"editor_{pedido_id}"
+                    )
 
-                # Cálculo de Total (frete agora é texto, não soma)
-                df_edit['_total'] = (df_edit['quantidade'] * df_edit['valor_unitario'].fillna(0)) + \
-                                     df_edit['impostos'].fillna(0)
-                total_geral = df_edit['_total'].sum()
+                    # Cálculo de Total (frete agora é texto, não soma)
+                    df_edit['_total'] = (df_edit['quantidade'] * df_edit['valor_unitario'].fillna(0)) + \
+                                         df_edit['impostos'].fillna(0)
+                    total_geral = df_edit['_total'].sum()
 
-                st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
-                st.write("")
-                
-                # Campo de observação
-                observacao = st.text_area(
-                    "Observação (opcional)",
-                    key=f"obs_{pedido_id}",
-                    placeholder="Digite aqui observações sobre o orçamento (prazos, condições, etc.)",
-                    height=100
-                )
-                st.write("")
+                    st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
+                    st.write("")
+                    
+                    # Campo de observação
+                    observacao = st.text_area(
+                        "Observação (opcional)",
+                        key=f"obs_{pedido_id}",
+                        placeholder="Digite aqui observações sobre o orçamento (prazos, condições, etc.)",
+                        height=100
+                    )
+                    st.write("")
 
-                col_pdf, col_confirm, col_fechar = st.columns([1, 1, 1])
+                    col_pdf, col_confirm, col_fechar = st.columns([1, 1, 1])
 
-                with col_pdf:
-                    # Lógica do PDF
-                    row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
-                    forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
-                    pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_edit)
-                    st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
+                    with col_pdf:
+                        # Lógica do PDF
+                        row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
+                        forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
+                        pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_edit)
+                        st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
 
-                with col_confirm:
-                    if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True, key=f"confirm_{pedido_id}"):
-                        st.session_state[f'confirmar_resposta_{pedido_id}'] = True
-                        st.rerun()
-                
-                # Pop-up de confirmação
-                if st.session_state.get(f'confirmar_resposta_{pedido_id}', False):
-                    @st.dialog("Confirmar Envio de Orçamento")
-                    def confirmar_resposta():
-                        st.warning(f"📦 Deseja confirmar o envio do orçamento do pedido **#{num}**?")
-                        st.info(f"💰 Total: **R$ {total_geral:,.2f}**")
-                        if observacao:
-                            st.info(f"📝 Observação: {observacao}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.button("✅ Confirmar", type="primary", use_container_width=True):
-                                if self.db.salvar_resposta_pedido(pedido_id, df_edit, observacao):
+                    with col_confirm:
+                        if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True, key=f"confirm_{pedido_id}"):
+                            st.session_state[f'confirmar_resposta_{pedido_id}'] = True
+                            st.rerun()
+                    
+                    # Pop-up de confirmação
+                    if st.session_state.get(f'confirmar_resposta_{pedido_id}', False):
+                        @st.dialog("Confirmar Envio de Orçamento")
+                        def confirmar_resposta():
+                            st.warning(f"📦 Deseja confirmar o envio do orçamento do pedido **#{num}**?")
+                            st.info(f"💰 Total: **R$ {total_geral:,.2f}**")
+                            if observacao:
+                                st.info(f"📝 Observação: {observacao}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("✅ Confirmar", type="primary", use_container_width=True):
+                                    if self.db.salvar_resposta_pedido(pedido_id, df_edit, observacao):
+                                        del st.session_state[f'confirmar_resposta_{pedido_id}']
+                                        st.toast(f"✅ Orçamento do pedido #{num} enviado!", icon="✅")
+                                        del st.session_state['pedido_aberto']
+                                        # FIX: invalidar cache para refletir status Enviado na lista
+                                        cache_key = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
+                                        if cache_key in st.session_state:
+                                            del st.session_state[cache_key]
+                                        st.rerun()
+                            with col2:
+                                if st.button("❌ Cancelar", type="secondary", use_container_width=True):
                                     del st.session_state[f'confirmar_resposta_{pedido_id}']
-                                    st.toast(f"✅ Orçamento do pedido #{num} enviado!", icon="✅")
-                                    del st.session_state['pedido_aberto']
-                                    # FIX: invalidar cache para refletir status Enviado na lista
-                                    cache_key = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                                    if cache_key in st.session_state:
-                                        del st.session_state[cache_key]
                                     st.rerun()
-                        with col2:
-                            if st.button("❌ Cancelar", type="secondary", use_container_width=True):
-                                del st.session_state[f'confirmar_resposta_{pedido_id}']
-                                st.rerun()
-                    confirmar_resposta()
+                        confirmar_resposta()
 
-                with col_fechar:
-                    if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_{pedido_id}"):
-                        del st.session_state['pedido_aberto']
-                        # Limpar cache para recarregar lista
-                        cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                        if cache_key_pedidos in st.session_state:
-                            del st.session_state[cache_key_pedidos]
-                        st.rerun()
+                    with col_fechar:
+                        if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_{pedido_id}"):
+                            del st.session_state['pedido_aberto']
+                            # Limpar cache para recarregar lista
+                            cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
+                            if cache_key_pedidos in st.session_state:
+                                del st.session_state[cache_key_pedidos]
+                            st.rerun()
 
     def _renderizar_filtros_cobertura(self):
         """Renderiza filtros em cascata da tela de cobertura"""
@@ -3309,7 +3383,18 @@ class AppClientePrime:
                     
                     st.markdown('<h3 style="color:#000000 !important;">Pedidos Gerados</h3>', unsafe_allow_html=True)
                     
-                    st.info("💡 Se necessário, é possível alterar a quantidade do pedido antes de enviar.")
+                    # Informações estruturadas sobre os pedidos
+                    st.markdown("""
+                        <div style="background-color:#F8F9FA; padding:15px; border-radius:8px; border-left:4px solid #0047AB; margin-bottom:15px;">
+                            <p style="color:#000000; margin:0; font-weight:600; font-size:0.95rem;">📋 Instruções de Envio</p>
+                            <ul style="color:#333333; margin:8px 0 0 0; padding-left:20px; font-size:0.9rem;">
+                                <li>Revise as quantidades e valores antes de confirmar</li>
+                                <li>Edite a quantidade diretamente na tabela, se necessário</li>
+                                <li>Baixe o PDF para registro antes do envio</li>
+                                <li>Após o envio, o pedido será encaminhado ao fornecedor</li>
+                            </ul>
+                        </div>
+                    """, unsafe_allow_html=True)
                     
                     # Usar tabs para múltiplos fornecedores
                     fornecedores_list = list(pedidos.keys())
@@ -3368,7 +3453,12 @@ class AppClientePrime:
                                         """, (grupo, fornecedor))
                                         result = cur.fetchone()
                                         if result:
-                                            st.info(f"📝 **Observação do Fornecedor:** {result[0]}")
+                                            st.markdown(f"""
+                                                <div style="background-color:#F8F9FA; padding:16px; border-radius:8px; border-left:4px solid #0047AB; margin:20px 0;">
+                                                    <p style="color:#0047AB; margin:0 0 8px 0; font-weight:700; font-size:0.95rem;">Observações do Fornecedor</p>
+                                                    <p style="color:#333333; margin:0; font-size:0.9rem; line-height:1.5;">{result[0]}</p>
+                                                </div>
+                                            """, unsafe_allow_html=True)
                                 except Exception as e:
                                     logger.error(f"Erro ao buscar observação: {e}")
                                 
