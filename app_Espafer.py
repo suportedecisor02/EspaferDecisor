@@ -3885,45 +3885,63 @@ if __name__ == "__main__":
     if not verificar_login():
         st.stop()
 
-    # Tela de carregamento inicial
+    # Tela de carregamento inicial - BLOQUEIA TUDO até carregar
     if not st.session_state.get('cache_carregado', False):
+        # Esconde sidebar durante carregamento
         st.markdown("""
             <style>
+            [data-testid="stSidebar"] { display: none !important; }
             .loading-container {
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
-                height: 80vh;
+                height: 100vh;
+                background: linear-gradient(135deg, #0047AB 0%, #000000 100%);
             }
             .loading-logo {
-                font-size: 3rem;
+                font-size: 4rem;
                 font-weight: 900;
-                color: #0047AB;
-                margin-bottom: 20px;
+                color: #FFFFFF;
+                margin-bottom: 30px;
+                text-shadow: 0 4px 8px rgba(0,0,0,0.3);
             }
             .loading-text {
-                font-size: 1.2rem;
-                color: #333333;
-                margin-bottom: 30px;
+                font-size: 1.3rem;
+                color: #FFFFFF;
+                margin-bottom: 20px;
+                opacity: 0.9;
+            }
+            .loading-spinner {
+                border: 4px solid rgba(255,255,255,0.3);
+                border-top: 4px solid #FFFFFF;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                animation: spin 1s linear infinite;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
             }
             </style>
             <div class="loading-container">
                 <div class="loading-logo">REDE ESPAFER</div>
                 <div class="loading-text">Carregando dados do sistema...</div>
+                <div class="loading-spinner"></div>
             </div>
         """, unsafe_allow_html=True)
         
-        with st.spinner("Preparando ambiente..."):
-            db = DatabaseManager()
-            nome_usuario = st.session_state.get('nome_usuario', '')
-            perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
-            precarregar_cache(db, nome_usuario, perfil)
-            st.session_state.cache_carregado = True
-            time.sleep(0.5)  # Pequena pausa para feedback visual
-        
+        # Carrega TUDO em background
+        db = DatabaseManager()
+        nome_usuario = st.session_state.get('nome_usuario', '')
+        perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+        precarregar_cache(db, nome_usuario, perfil)
+        st.session_state.cache_carregado = True
+        time.sleep(0.8)  # Feedback visual
         st.rerun()
 
+    # Sistema só renderiza DEPOIS do cache carregado
     app    = AppClientePrime()
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
     app.render_sidebar()
