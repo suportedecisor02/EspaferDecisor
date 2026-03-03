@@ -3436,11 +3436,6 @@ class AppClientePrime:
                                                 st.rerun()
                                     confirmar()
 
-
-# NOTA: a função confirmar_envio_pedido abaixo foi removida pois estava duplicada
-# e nunca era chamada — os diálogos de confirmação são definidos inline nas telas
-# que os utilizam, com acesso ao contexto local necessário.
-
 @st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
     # CSS para deixar todo o texto branco
@@ -3488,12 +3483,14 @@ Identifica **o quê**, **quanto** e **onde** comprar, e envia diretamente aos fo
 3. Configure os parâmetros (dias de cobertura alvo e estoque mínimo)
 4. Clique em "GERAR ANÁLISE"
 5. **Escolha o modo de envio:**
-   - **Todos os Fornecedores:** Envia para todos cadastrados
+   - **Pré Definido:** Usa o fornecedor já atribuído a cada item
+   - **Todos os Fornecedores:** Envia para todos cadastrados (filtra por marca)
    - **Fornecedores Específicos:** Selecione quais receberão o pedido
+   - **Fornecedor Único:** Concentra todo o pedido em um fornecedor
 6. **Edite a tabela:**
    - ✏️ **Reposição:** Ajuste a quantidade a comprar
-   - ✏️ **Fornecedor:** Escolha o fornecedor para cada item
-   - **Remover:** Marque itens que não deseja incluir
+   - ✏️ **Fornecedor:** Escolha/altere o fornecedor para cada item
+   - **Incluir:** Desmarque itens que não deseja enviar
 7. Use o botão **"↩️ Desfazer Última Remoção"** se excluir algo por engano
 8. Clique em **"📋 ENVIAR PEDIDOS"** para criar os pedidos automaticamente
 
@@ -3532,11 +3529,13 @@ Compara cotações e identifica a melhor opção de compra.
 ---
 
 ### 💡 Dicas Importantes
-* **Remoção de Itens:** Use o checkbox "Remover" e desfaça com o botão de rollback
+* **Produtos sem Marca:** O sistema atribui automaticamente fornecedor para itens sem marca cadastrada
+* **Remoção de Itens:** Use o checkbox "Incluir" e desfaça com o botão de rollback
 * **Edição Direta:** Todos os campos marcados com ✏️ são editáveis
 * **Filtros:** Use filtros específicos para análises mais precisas
-* **Modo de Envio:** Escolha "Específicos" para enviar apenas para alguns fornecedores
+* **Modo de Envio:** Escolha o modo adequado conforme sua estratégia de compra
 * **Rollback:** O botão desfaz remoções uma por uma (última removida primeiro)
+* **Cache Otimizado:** Sistema carrega dados mais rápido com cache inteligente
 
 ---
 
@@ -3544,6 +3543,8 @@ Compara cotações e identifica a melhor opção de compra.
 * O sistema cria pedidos separados automaticamente por fornecedor
 * Após enviar, os pedidos ficam disponíveis para os fornecedores responderem
 * Você pode acompanhar as respostas em "Inteligência de Compra"
+* Ao trocar de aba, o sistema limpa automaticamente pedidos abertos
+* Dados de catálogo (marcas, grupos, etc.) são atualizados a cada hora
 
 ---
 *Você pode fechar esta janela clicando no 'X' ou fora da caixa.*
