@@ -18,5 +18,7 @@ creds.json
 *.log
 *.csv
 *.xlsx
+*.dockerignore
 /backup
 backup1/app_Espafer.py
+Dockerfile
