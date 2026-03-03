@@ -2934,7 +2934,7 @@ class AppClientePrime:
                                                     logger.error(f"Erro ao enviar para {forn}: {e}")
                                     
                                     if enviados:
-                                        st.toast(f"✅ {enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
+                                        st.toast(f"✅ Envio concluído! {enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
                                         st.session_state.itens_removidos = []
                                         st.session_state.df_analise_cache = pd.DataFrame()
                                         st.session_state.filtros_anteriores = None
@@ -3482,10 +3482,10 @@ Identifica **o quê**, **quanto** e **onde** comprar, e envia diretamente aos fo
 2. Escolha "Sugestão de Compra"
 3. Configure os parâmetros (dias de cobertura alvo e estoque mínimo)
 4. Clique em "GERAR ANÁLISE"
-5. **Escolha o modo de envio:**
+5. **Escolha o modo de envio:** (Não envia itens que não fazem parte do estoque do fornecedor)
    - **Pré Definido:** Usa o fornecedor já atribuído a cada item
-   - **Todos os Fornecedores:** Envia para todos cadastrados (filtra por marca)
-   - **Fornecedores Específicos:** Selecione quais receberão o pedido
+   - **Todos os Fornecedores:** Envia para todos cadastrados
+   - **Fornecedores Específicos:** Selecione quais receberão o pedido 
    - **Fornecedor Único:** Concentra todo o pedido em um fornecedor
 6. **Edite a tabela:**
    - ✏️ **Reposição:** Ajuste a quantidade a comprar
