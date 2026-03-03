@@ -1644,6 +1644,19 @@ class AppClientePrime:
             .black-text { color: #333333 !important; font-weight: 500; }
             .pedido-num-bold { color: #0047AB !important; font-weight: 900; }
             .header-title { color: #000000 !important; font-weight: 800; font-size: 1rem; }
+            /* Botão de download PDF com mesmo estilo dos botões normais */
+            .stDownloadButton button {
+                background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
+                color: white !important;
+                border: none !important;
+                font-weight: 700 !important;
+                transition: transform 0.2s ease-in-out !important;
+            }
+            .stDownloadButton button:hover {
+                background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
+                color: white !important;
+                transform: scale(1.02) !important;
+            }
             </style>
         """, unsafe_allow_html=True)
         
@@ -1670,13 +1683,17 @@ class AppClientePrime:
                 if not df_itens.empty:
                     st.dataframe(df_itens[['codigo_produto', 'nome_produto', 'quantidade']], use_container_width=True, hide_index=True)
                 
-                if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
-                    del st.session_state['pedido_cliente_aberto']
-                    # Limpar cache para recarregar
-                    cache_key_lista = f'lista_pedidos_cliente_{cliente_nome}'
-                    if cache_key_lista in st.session_state:
-                        del st.session_state[cache_key_lista]
-                    st.rerun()
+                col_voltar, col_pdf = st.columns(2)
+                with col_voltar:
+                    if st.button("← Voltar para Lista", type="secondary", use_container_width=True):
+                        del st.session_state['pedido_cliente_aberto']
+                        cache_key_lista = f'lista_pedidos_cliente_{cliente_nome}'
+                        if cache_key_lista in st.session_state:
+                            del st.session_state[cache_key_lista]
+                        st.rerun()
+                with col_pdf:
+                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens)
+                    st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True, type="primary")
             return
         
         # MODO LISTA - Mostrar todos os pedidos
@@ -1697,8 +1714,8 @@ class AppClientePrime:
             c_num.markdown('<div class="header-title">Pedido</div>', unsafe_allow_html=True)
             c_forn.markdown('<div class="header-title">Fornecedor</div>', unsafe_allow_html=True)
             c_status.markdown('<div class="header-title" style="text-align: center;">Status</div>', unsafe_allow_html=True)
-            c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
-            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            c_data.markdown('<div class="header-title" style="text-align: center;">Data</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title" style="text-align: center;">Ações</div>', unsafe_allow_html=True)
             st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
             
             for _, row in df_pedidos.iterrows():
@@ -1742,17 +1759,16 @@ class AppClientePrime:
                         {status}
                     </div>
                 ''', unsafe_allow_html=True)
-                col_d.markdown(f'<div class="black-text">{data_str}</div>', unsafe_allow_html=True)
+                col_d.markdown(f'<div class="black-text" style="padding-top:8px; text-align:center;">{data_str}</div>', unsafe_allow_html=True)
                 
                 # Botões de ação baseados no status e dias
                 if status == "Pendente" and dias_desde_criacao >= 3:
-                    # Mostrar dois botões: Ver Detalhes e Notificar
-                    col_a1, col_a2 = col_a.columns(2)
-                    texto_botao = "✖" if esta_aberto else "Ver"
+                    # Mostrar três botões: Visualizar, Notificar e PDF
+                    col_a1, col_a2, col_a3 = col_a.columns(3)
+                    texto_botao = "✖" if esta_aberto else "Visualizar"
                     if col_a1.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
                         if pedido_aberto == pedido_id:
                             del st.session_state['pedido_cliente_aberto']
-                            # FIX: limpar cache para forcar recarregamento da lista
                             if cache_key_lista in st.session_state:
                                 del st.session_state[cache_key_lista]
                         else:
@@ -1763,11 +1779,21 @@ class AppClientePrime:
                             st.toast(f"🔔 Notificação enviada para {fornecedor}!", icon="✅")
                         else:
                             st.toast(f"❌ Erro ao enviar notificação", icon="⚠️")
+                    df_itens_pdf = self.db.buscar_itens_pedido(pedido_id)
+                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens_pdf)
+                    if col_a3.button("PDF", key=f"pdf_cli_{pedido_id}", use_container_width=True):
+                        pass  # Download button não precisa de ação
+                    col_a3.download_button("PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", key=f"pdf_dl_{pedido_id}", use_container_width=True)
                 else:
-                    texto_botao = "✖ Fechar" if esta_aberto else "Ver Detalhes"
-                    if col_a.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
+                    # Mostrar dois botões: Visualizar e PDF
+                    col_a1, col_a2 = col_a.columns(2)
+                    texto_botao = "✖ Fechar" if esta_aberto else "Visualizar"
+                    if col_a1.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
                         st.session_state['pedido_cliente_aberto'] = pedido_id
                         st.rerun()
+                    df_itens_pdf = self.db.buscar_itens_pedido(pedido_id)
+                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens_pdf)
+                    col_a2.download_button("PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", key=f"pdf_cli_{pedido_id}", use_container_width=True)
         
         # Fim da lista
 
