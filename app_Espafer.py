@@ -242,11 +242,12 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def buscar_pedidos_cliente(self, cliente_nome=None):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+    def buscar_pedidos_cliente(_self, cliente_nome=None):
         """Busca todos os pedidos do cliente (Pendente/Enviado/Confirmado)."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -268,11 +269,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_pedidos_fornecedor(self, nome_fornecedor=None):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+    def buscar_pedidos_fornecedor(_self, nome_fornecedor=None):
         """Busca pedidos para orçamento (Pendente/Enviado). Se nome_fornecedor informado, filtra por ele."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -295,11 +297,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_pedidos_confirmados(self, nome_fornecedor=None):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+    def buscar_pedidos_confirmados(_self, nome_fornecedor=None):
         """Busca pedidos confirmados. Se nome_fornecedor informado, filtra por ele."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -322,11 +325,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_itens_pedido(self, pedido_id):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=50)
+    def buscar_itens_pedido(_self, pedido_id):
         """Busca os itens de um pedido específico."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = """
                 SELECT id, codigo_produto, nome_produto, quantidade,
                        COALESCE(valor_unitario, 0)  AS valor_unitario,
@@ -490,7 +494,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=10)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=5)
     def buscar_filiais(_self):
         if not _self.creds: return []
         conn = None
@@ -505,7 +509,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
         
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=10)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=5)
     def buscar_marcas(_self, filial=None):
         if not _self.creds: return []
         conn = None
@@ -520,7 +524,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=50)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=20)
     def buscar_grupos(_self, filial=None, marca=None):
         if not _self.creds: return []
         conn = None
@@ -539,7 +543,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=100)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=30)
     def buscar_subgrupos(_self, filial=None, marca=None, grupo=None):
         if not _self.creds: return []
         conn = None
@@ -560,7 +564,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=100)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=30)
     def buscar_subgrupos1(_self, filial=None, marca=None, grupo=None, subgrupo=None):
         if not _self.creds: return []
         conn = None
@@ -585,7 +589,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=200)
+    @st.cache_data(ttl=14400, show_spinner=False, max_entries=50)
     def buscar_produtos(_self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
         if not _self.creds: return []
         conn = None
@@ -610,11 +614,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_pedidos_respondidos(self, cliente_nome=None):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+    def buscar_pedidos_respondidos(_self, cliente_nome=None):
         """Busca pedidos com status Enviado agrupados por idcobertura."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = """
                 SELECT 
                     idcobertura as grupo_pedido,
@@ -639,11 +644,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def buscar_detalhes_comparativo(self, idcobertura):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
+    def buscar_detalhes_comparativo(_self, idcobertura):
         """Busca detalhes de todos os fornecedores de um idcobertura."""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             query = """
                 SELECT 
                     pv.fornecedor_nome,
@@ -667,14 +673,15 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
     
-    def buscar_notificacoes(self, nome_usuario, perfil):
+    @st.cache_data(ttl=60, show_spinner=False, max_entries=20)
+    def buscar_notificacoes(_self, nome_usuario, perfil):
         """Busca notificações para o usuário baseado no perfil"""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             
             # Buscar notificações removidas do usuário
-            notif_removidas = self.buscar_notificacoes_removidas(nome_usuario)
+            notif_removidas = _self.buscar_notificacoes_removidas(nome_usuario)
             
             notificacoes = []
             
@@ -782,11 +789,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
     
-    def buscar_notificacoes_removidas(self, nome_usuario):
+    @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+    def buscar_notificacoes_removidas(_self, nome_usuario):
         """Busca IDs de notificações removidas pelo usuário"""
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             cur = conn.cursor()
             
             cur.execute("""
@@ -904,7 +912,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False, max_entries=5)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=3)
     def buscar_fornecedores(_self):
         if not _self.creds: return pd.DataFrame()
         conn = None
@@ -931,14 +939,15 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def verificar_produtos_fornecedor(self, fornecedor_nome, lista_produtos):
+    @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
+    def verificar_produtos_fornecedor(_self, fornecedor_nome, lista_produtos):
         """Verifica quais produtos da lista o fornecedor possui (baseado na marca).
         FIX: substituido loop N+1 por uma unica query IN para todos os produtos.
         """
-        if not self.creds or not lista_produtos: return set(), set()
+        if not _self.creds or not lista_produtos: return set(), set()
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             # Buscar marcas do fornecedor
             query_marcas = """
                 SELECT DISTINCT TRIM(UPPER(f.marca)) as marca
@@ -979,11 +988,12 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    def consultar_cobertura(self, filial, marca, grupo, subgrupo, subgrupo1, produto, dias_alvo, dias_corte, modo):
-        if not self.creds: return pd.DataFrame()
+    @st.cache_data(ttl=600, show_spinner=False, max_entries=100)
+    def consultar_cobertura(_self, filial, marca, grupo, subgrupo, subgrupo1, produto, dias_alvo, dias_corte, modo):
+        if not _self.creds: return pd.DataFrame()
         conn = None
         try:
-            conn = self._get_connection()
+            conn = _self._get_connection()
             # Garante valores numéricos limpos — sem interpolação de strings
             d_alv = int(float(dias_alvo)) if dias_alvo > 0 else 35
             d_cor = float(dias_corte) if dias_corte >= 0 else 0.0
@@ -2960,48 +2970,24 @@ class AppClientePrime:
                     col_btn, _ = st.columns([1, 3])
                     with col_btn:
                         if st.button("📋 ENVIAR PEDIDOS", type="primary", use_container_width=True):
-                            st.session_state['confirmar_envio_cobertura'] = True
-                            st.rerun()
-                    
-                    # Pop-up de confirmação
-                    if st.session_state.get('confirmar_envio_cobertura', False):
-                        @st.dialog("Confirmar Envio de Pedidos")
-                        def confirmar_envio_cobertura():
                             df_envio = df_editado[df_editado['incluir'] == True].copy()
                             
                             if df_envio.empty:
                                 st.warning("Nenhum item para enviar.")
-                                if st.button("Fechar", use_container_width=True):
-                                    del st.session_state['confirmar_envio_cobertura']
-                                    st.rerun()
-                                return
-                            
-                            # Determinar fornecedores baseado no modo
-                            if modo_envio == "Pré Definido":
-                                fornecedores_destino = df_envio['fornecedor'].unique().tolist()
-                            elif modo_envio == "Todos os Fornecedores":
-                                fornecedores_destino = lista_fornecedores
-                            elif modo_envio == "Fornecedor Único":
-                                fornecedores_destino = [fornecedor_unico] if fornecedor_unico else []
                             else:
-                                fornecedores_destino = fornecedores_selecionados
-                            
-                            if not fornecedores_destino:
-                                st.warning("Selecione pelo menos um fornecedor.")
-                                if st.button("Fechar", use_container_width=True):
-                                    del st.session_state['confirmar_envio_cobertura']
-                                    st.rerun()
-                                return
-                            
-                            qtd_itens = len(df_envio)
-                            qtd_fornecedores = len(fornecedores_destino)
-                            
-                            st.warning(f"📦 Deseja confirmar o envio de **{qtd_itens}** itens para **{qtd_fornecedores}** fornecedor(es)?")
-                            st.info(f"📄 Fornecedores: {', '.join(fornecedores_destino[:3])}{'...' if len(fornecedores_destino) > 3 else ''}")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button("✅ Confirmar Envio", type="primary", use_container_width=True):
+                                # Determinar fornecedores baseado no modo
+                                if modo_envio == "Pré Definido":
+                                    fornecedores_destino = df_envio['fornecedor'].unique().tolist()
+                                elif modo_envio == "Todos os Fornecedores":
+                                    fornecedores_destino = lista_fornecedores
+                                elif modo_envio == "Fornecedor Único":
+                                    fornecedores_destino = [fornecedor_unico] if fornecedor_unico else []
+                                else:
+                                    fornecedores_destino = fornecedores_selecionados
+                                
+                                if not fornecedores_destino:
+                                    st.warning("Selecione pelo menos um fornecedor.")
+                                else:
                                     cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
                                     enviados = 0
                                     erros = []
@@ -3026,10 +3012,8 @@ class AppClientePrime:
                                                     erros.append(forn)
                                                     logger.error(f"Erro ao enviar para {forn}: {e}")
                                         elif modo_envio == "Fornecedores Específicos":
-                                            # Para cada fornecedor, envia apenas os itens atribuídos a ele
                                             for forn in fornecedores_selecionados:
                                                 try:
-                                                    # Filtra itens atribuídos especificamente a este fornecedor
                                                     df_forn = df_envio[df_envio['fornecedor'] == forn].copy()
                                                     
                                                     if not df_forn.empty:
@@ -3068,16 +3052,11 @@ class AppClientePrime:
                                         st.session_state.df_analise_cache = pd.DataFrame()
                                         st.session_state.filtros_anteriores = None
                                         st.session_state.filtrar_sem_fornecedor = False
-                                        st.session_state.cache_qtd_itens = {}  # FIX: invalidar cache de qtd itens
-                                        del st.session_state['confirmar_envio_cobertura']
+                                        st.session_state.cache_qtd_itens = {}
                                         st.rerun()
                                     if erros:
                                         st.error(f"Falha ao registrar pedido para: {', '.join(erros)}")
-                            with col2:
-                                if st.button("❌ Cancelar", type="secondary", use_container_width=True):
-                                    del st.session_state['confirmar_envio_cobertura']
-                                    st.rerun()
-                        confirmar_envio_cobertura()
+                                        st.rerun()
             
             elif filtros_anteriores is not None and 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty:
                 st.warning("Nenhum item encontrado com os filtros selecionados.")
@@ -3209,22 +3188,10 @@ class AppClientePrime:
     def _renderizar_detalhes_solicitacao(self, grupo):
         """Renderiza os detalhes de uma solicitação específica"""
         if 'solicitacao_aberta' in st.session_state:
-            # Verificar se é novo e exibir badge
             eh_novo = self._pedido_eh_novo(grupo)
             badge_novo = ' <span style="background:#FFC107;color:#000000;padding:4px 12px;border-radius:12px;font-size:0.8rem;font-weight:bold;margin-left:10px;">NOVO</span>' if eh_novo else ''
             
-            st.markdown(f'<h2 style="color:black; font-weight:900;">Análise Comparativa - #{grupo}{badge_novo}</h2>', unsafe_allow_html=True)
-            
-            # Botão voltar
-            if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
-                del st.session_state['solicitacao_aberta']
-                # Limpar cache da lista para recarregar
-                cache_key_lista = f'lista_solicitacoes_{st.session_state.get("nome_usuario", "")}'
-                if cache_key_lista in st.session_state:
-                    del st.session_state[cache_key_lista]
-                st.rerun()
-            
-            st.divider()
+            st.markdown(f'<h2 style="color:black; font-weight:900; margin:0;">Análise Comparativa - #{grupo}{badge_novo}</h2>', unsafe_allow_html=True)
             
             # Cache dos detalhes para evitar recarregar a cada interação
             cache_key = f'detalhes_{grupo}'
@@ -3420,8 +3387,6 @@ class AppClientePrime:
             
             # Exibir pedidos
             if pedidos:
-                    st.write("---")
-                    
                     # CSS específico para Pedidos Gerados
                     st.markdown("""
                         <style>
@@ -3518,7 +3483,7 @@ class AppClientePrime:
                                     logger.error(f"Erro ao buscar observação: {e}")
                                 
                                 # Botões PDF e Enviar
-                                col_pdf, col_enviar = st.columns(2)
+                                col_pdf, col_enviar, col_voltar = st.columns(3)
                                 with col_pdf:
                                     pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_editado)
                                     st.download_button(
@@ -3536,50 +3501,37 @@ class AppClientePrime:
                                         if df_editado['quantidade'].min() < 1:
                                             st.error("❌ Quantidade deve ser maior que zero")
                                         else:
-                                            # Pop-up de confirmação
-                                            st.session_state[f'confirmar_envio_{fornecedor}'] = True
-                                            st.rerun()
-                                
-                                # Pop-up de confirmação
-                                if st.session_state.get(f'confirmar_envio_{fornecedor}', False):
-                                    @st.dialog("Confirmar Envio de Pedido")
-                                    def confirmar():
-                                        qtd_itens = len(df_editado)
-                                        total = (df_editado['quantidade'] * df_editado['Valor Unitário']).sum()
-                                        st.warning(f"📦 Deseja confirmar o envio do pedido para **{fornecedor}**?")
-                                        st.info(f"📋 **{qtd_itens}** itens | Total: **R$ {total:,.2f}**")
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            if st.button("✅ Confirmar", type="primary", use_container_width=True):
-                                                cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
-                                                try:
-                                                    df_envio = df_editado.copy()
-                                                    df_envio['Qtd Compra'] = df_envio['quantidade']
-                                                    
-                                                    # Usar o mesmo idcobertura do grupo de orçamentos
-                                                    grupo = st.session_state.get('solicitacao_aberta')
-                                                    idcobertura_grupo = int(grupo) if grupo else (int(time.time() * 1000) + st.session_state.get('_idcob_counter', 0)) % MAX_INT_POSTGRES
-                                                    
-                                                    numero = self.db.criar_pedido(cliente_nome, fornecedor, df_envio, idcobertura_grupo)
-                                                    
-                                                    # Marcar como Confirmado usando context manager — FIX: evita vazamento de conexão e NameError no except
-                                                    with self.db.get_connection() as conn:
-                                                        cur = conn.cursor()
-                                                        cur.execute("UPDATE pedidos_vendas SET status = %s WHERE numero_pedido = %s", (StatusPedido.CONFIRMADO, numero))
-                                                        conn.commit()
-                                                        cur.close()
-                                                    
-                                                    del st.session_state[f'confirmar_envio_{fornecedor}']
-                                                    st.toast(f"✅ Pedido {numero} enviado para {fornecedor}!", icon="✅")
-                                                    st.rerun()
-                                                except Exception as e:
-                                                    st.error(f"❌ Erro ao criar pedido para {fornecedor}. Tente novamente.")
-                                                    logger.error(f"Erro ao criar pedido para {fornecedor}: {e}")
-                                        with col2:
-                                            if st.button("❌ Cancelar", type="secondary", use_container_width=True):
-                                                del st.session_state[f'confirmar_envio_{fornecedor}']
+                                            # Enviar pedido diretamente sem confirmação
+                                            cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
+                                            try:
+                                                df_envio = df_editado.copy()
+                                                df_envio['Qtd Compra'] = df_envio['quantidade']
+                                                
+                                                # Usar o mesmo idcobertura do grupo de orçamentos
+                                                grupo = st.session_state.get('solicitacao_aberta')
+                                                idcobertura_grupo = int(grupo) if grupo else (int(time.time() * 1000) + st.session_state.get('_idcob_counter', 0)) % MAX_INT_POSTGRES
+                                                
+                                                numero = self.db.criar_pedido(cliente_nome, fornecedor, df_envio, idcobertura_grupo)
+                                                
+                                                # Marcar como Confirmado
+                                                with self.db.get_connection() as conn:
+                                                    cur = conn.cursor()
+                                                    cur.execute("UPDATE pedidos_vendas SET status = %s WHERE numero_pedido = %s", (StatusPedido.CONFIRMADO, numero))
+                                                    conn.commit()
+                                                    cur.close()
+                                                
+                                                st.toast(f"✅ Pedido {numero} enviado para {fornecedor}!", icon="✅")
                                                 st.rerun()
-                                    confirmar()
+                                            except Exception as e:
+                                                st.error(f"❌ Erro ao criar pedido para {fornecedor}. Tente novamente.")
+                                                logger.error(f"Erro ao criar pedido para {fornecedor}: {e}")
+                                with col_voltar:
+                                    if st.button("← Voltar", type="secondary", use_container_width=True, key=f"voltar_{fornecedor}"):
+                                        del st.session_state['solicitacao_aberta']
+                                        cache_key_lista = f'lista_solicitacoes_{st.session_state.get("nome_usuario", "")}'
+                                        if cache_key_lista in st.session_state:
+                                            del st.session_state[cache_key_lista]
+                                        st.rerun()
 
 @st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
@@ -3850,6 +3802,7 @@ def verificar_login():
                     st.session_state.nome_usuario  = "Espafer"
                     st.session_state.perfil_usuario = "ADM"
                     st.session_state.tentativas_login = 0
+                    st.session_state.cache_carregado = False
                     logger.info("Login de emergência utilizado")
                     st.rerun()
 
@@ -3864,6 +3817,7 @@ def verificar_login():
                         st.session_state.perfil_usuario = dados_usuario[2]   # ADM / CLIENTE / FORNECEDOR
                         st.session_state.tentativas_login = 0
                         st.session_state.bloqueado_ate  = None
+                        st.session_state.cache_carregado = False
                         
                         # Limpar cache de análises e filtros ao fazer login
                         st.session_state.df_analise_cache = pd.DataFrame()
@@ -3897,6 +3851,31 @@ def verificar_login():
 
     return False
 
+def precarregar_cache(db, nome_usuario, perfil):
+    """Pré-carrega todos os dados no cache após login"""
+    try:
+        # Cache de filtros básicos
+        db.buscar_filiais()
+        db.buscar_marcas()
+        db.buscar_grupos()
+        db.buscar_subgrupos()
+        db.buscar_subgrupos1()
+        db.buscar_fornecedores()
+        
+        # Cache específico por perfil
+        if perfil in ("ADM", "CLIENTE"):
+            db.buscar_pedidos_cliente(nome_usuario)
+            db.buscar_pedidos_respondidos(nome_usuario)
+            db.buscar_notificacoes(nome_usuario, perfil)
+        elif perfil == "FORNECEDOR":
+            db.buscar_pedidos_fornecedor(nome_usuario)
+            db.buscar_pedidos_confirmados(nome_usuario)
+            db.buscar_notificacoes(nome_usuario, perfil)
+        
+        logger.info(f"Cache pré-carregado com sucesso para {nome_usuario}")
+    except Exception as e:
+        logger.error(f"Erro ao pré-carregar cache: {e}")
+
 def logout():
     st.session_state.logado = False
     st.rerun()
@@ -3905,6 +3884,45 @@ def logout():
 if __name__ == "__main__":
     if not verificar_login():
         st.stop()
+
+    # Tela de carregamento inicial
+    if not st.session_state.get('cache_carregado', False):
+        st.markdown("""
+            <style>
+            .loading-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 80vh;
+            }
+            .loading-logo {
+                font-size: 3rem;
+                font-weight: 900;
+                color: #0047AB;
+                margin-bottom: 20px;
+            }
+            .loading-text {
+                font-size: 1.2rem;
+                color: #333333;
+                margin-bottom: 30px;
+            }
+            </style>
+            <div class="loading-container">
+                <div class="loading-logo">REDE ESPAFER</div>
+                <div class="loading-text">Carregando dados do sistema...</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        with st.spinner("Preparando ambiente..."):
+            db = DatabaseManager()
+            nome_usuario = st.session_state.get('nome_usuario', '')
+            perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
+            precarregar_cache(db, nome_usuario, perfil)
+            st.session_state.cache_carregado = True
+            time.sleep(0.5)  # Pequena pausa para feedback visual
+        
+        st.rerun()
 
     app    = AppClientePrime()
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
