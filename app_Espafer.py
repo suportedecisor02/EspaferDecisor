@@ -3827,7 +3827,6 @@ def verificar_login():
                             st.session_state.menu_ativo = "Orçamento"
                         else:
                             st.session_state.menu_ativo = "Gerar Cobertura"
-                        st.success(f"Bem-vindo, {dados_usuario[1]}!")
                         logger.info(f"Login bem-sucedido: {user_input} — perfil: {dados_usuario[2]}")
                         st.rerun()
                     else:
