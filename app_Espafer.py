@@ -257,10 +257,10 @@ class DatabaseManager:
                 WHERE 1=1
             """
             if cliente_nome:
-                query = base + " AND LOWER(pv.cliente_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
+                query = base + " AND LOWER(pv.cliente_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn, params=(cliente_nome,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC"
+                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos do cliente: {e}")
@@ -284,10 +284,10 @@ class DatabaseManager:
                 WHERE pv.status IN ('Pendente', 'Enviado')
             """
             if nome_fornecedor:
-                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
+                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn, params=(nome_fornecedor,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC"
+                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos: {e}")
@@ -311,10 +311,10 @@ class DatabaseManager:
                 WHERE pv.status = 'Confirmado'
             """
             if nome_fornecedor:
-                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
+                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn, params=(nome_fornecedor,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC"
+                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos confirmados: {e}")
@@ -345,26 +345,29 @@ class DatabaseManager:
             if conn: conn.close()
 
     def salvar_resposta_pedido(self, pedido_id, itens_df, observacao=None):
-        """Salva valores preenchidos pelo fornecedor e marca pedido como Enviado."""
+        """Salva valores preenchidos pelo fornecedor e marca pedido como Enviado. OTIMIZADO: batch update."""
         conn = None
         try:
             conn = self._get_connection()
             cur = conn.cursor()
-            for _, row in itens_df.iterrows():
-                cur.execute("""
-                    UPDATE pedidos_itens
-                       SET valor_unitario = %s,
-                           impostos       = %s,
-                           frete          = %s,
-                           prazo_entrega  = %s
-                     WHERE id = %s
-                """, (
+            
+            # OTIMIZAÇÃO: UPDATE em batch usando executemany
+            update_data = [
+                (
                     float(row.get('valor_unitario') or 0),
-                    float(row.get('impostos')       or 0),
-                    str(row.get('frete')            or ''),
-                    str(row.get('prazo_entrega')    or ''),
+                    float(row.get('impostos') or 0),
+                    str(row.get('frete') or ''),
+                    str(row.get('prazo_entrega') or ''),
                     int(row['id'])
-                ))
+                )
+                for _, row in itens_df.iterrows()
+            ]
+            
+            cur.executemany("""
+                UPDATE pedidos_itens
+                SET valor_unitario = %s, impostos = %s, frete = %s, prazo_entrega = %s
+                WHERE id = %s
+            """, update_data)
             
             # Atualizar observação do pedido
             if observacao:
@@ -387,7 +390,7 @@ class DatabaseManager:
             if conn: conn.close()
 
     def criar_pedido(self, cliente_nome, fornecedor_nome, itens_df, idcobertura=None):
-        """Cria um pedido novo e insere os itens."""
+        """Cria um pedido novo e insere os itens. OTIMIZADO: batch insert."""
         conn = None
         try:
             conn = self._get_connection()
@@ -455,23 +458,23 @@ class DatabaseManager:
     
             pedido_id = cur.fetchone()[0]
     
-            # 5. Inserir os Itens do Pedido
-            for _, row in itens_df.iterrows():
-                qtd = row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0
-                cod_prod = str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0')
-                nome_prod = str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado')
-    
-                cur.execute("""
-                    INSERT INTO public.pedidos_itens
-                        (pedido_id, codigo_produto, nome_produto, quantidade,
-                         valor_unitario, impostos, frete, prazo_entrega)
-                    VALUES (%s, %s, %s, %s, NULL, NULL, NULL, NULL)
-                """, (
+            # 5. OTIMIZAÇÃO: Inserir os Itens do Pedido em batch usando executemany
+            itens_data = [
+                (
                     pedido_id,
-                    cod_prod,
-                    nome_prod,
-                    float(qtd) if str(qtd).replace('.','').isdigit() else 0.0,
-                ))
+                    str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0'),
+                    str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado'),
+                    float(row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0) if str(row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0).replace('.','').isdigit() else 0.0
+                )
+                for _, row in itens_df.iterrows()
+            ]
+            
+            cur.executemany("""
+                INSERT INTO public.pedidos_itens
+                    (pedido_id, codigo_produto, nome_produto, quantidade,
+                     valor_unitario, impostos, frete, prazo_entrega)
+                VALUES (%s, %s, %s, %s, NULL, NULL, NULL, NULL)
+            """, itens_data)
     
             conn.commit()
             cur.close()
@@ -487,13 +490,13 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=10)
     def buscar_filiais(_self):
         if not _self.creds: return []
         conn = None
         try:
             conn = _self._get_connection()
-            query = "SELECT DISTINCT nome_empresa FROM venda_itens_consolidado WHERE nome_empresa IS NOT NULL ORDER BY 1"
+            query = "SELECT DISTINCT nome_empresa FROM venda_itens_consolidado WHERE nome_empresa IS NOT NULL ORDER BY 1 LIMIT 100"
             df = pd.read_sql(query, conn)
             return df['nome_empresa'].tolist()
         except Exception as e:
@@ -502,14 +505,13 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
         
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=10)
     def buscar_marcas(_self, filial=None):
         if not _self.creds: return []
         conn = None
         try:
             conn = _self._get_connection()
-            query = "SELECT DISTINCT marca FROM cad_produto WHERE marca IS NOT NULL AND marca != ''"
-            query += " ORDER BY 1"
+            query = "SELECT DISTINCT marca FROM cad_produto WHERE marca IS NOT NULL AND marca != '' ORDER BY 1 LIMIT 200"
             df = pd.read_sql(query, conn)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -518,7 +520,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=50)
     def buscar_grupos(_self, filial=None, marca=None):
         if not _self.creds: return []
         conn = None
@@ -528,7 +530,7 @@ class DatabaseManager:
             params = []
             if marca and marca != "TODOS":
                 query += " AND marca = %s"; params.append(marca)
-            query += " ORDER BY 1"
+            query += " ORDER BY 1 LIMIT 200"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -537,7 +539,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=100)
     def buscar_subgrupos(_self, filial=None, marca=None, grupo=None):
         if not _self.creds: return []
         conn = None
@@ -549,7 +551,7 @@ class DatabaseManager:
                 query += " AND marca = %s"; params.append(marca)
             if grupo and grupo != "TODOS":
                 query += " AND nome_grupo = %s"; params.append(grupo)
-            query += " ORDER BY 1"
+            query += " ORDER BY 1 LIMIT 200"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -558,7 +560,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=100)
     def buscar_subgrupos1(_self, filial=None, marca=None, grupo=None, subgrupo=None):
         if not _self.creds: return []
         conn = None
@@ -574,7 +576,7 @@ class DatabaseManager:
             if subgrupo and subgrupo != "TODOS":
                 query += " AND nome_sub_grupo = %s"; params.append(subgrupo)
                 
-            query += " ORDER BY 1"
+            query += " ORDER BY 1 LIMIT 200"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -583,7 +585,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False, max_entries=200)
     def buscar_produtos(_self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
         if not _self.creds: return []
         conn = None
@@ -599,7 +601,7 @@ class DatabaseManager:
                 query += " AND nome_sub_grupo = %s"; params.append(subgrupo)
             if subgrupo1 and subgrupo1 != "TODOS":
                 query += " AND nome_sub_grupo1 = %s"; params.append(subgrupo1)
-            query += " ORDER BY 1"
+            query += " ORDER BY 1 LIMIT 500"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -625,7 +627,7 @@ class DatabaseManager:
             """
             if cliente_nome:
                 query += " AND LOWER(cliente_nome) = LOWER(%s)"
-            query += " GROUP BY idcobertura ORDER BY MIN(data_criacao) DESC"
+            query += " GROUP BY idcobertura ORDER BY MIN(data_criacao) DESC LIMIT 100"
             
             if cliente_nome:
                 return pd.read_sql(query, conn, params=(cliente_nome,))
@@ -902,7 +904,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=1800, show_spinner=False)
+    @st.cache_data(ttl=3600, show_spinner=False, max_entries=5)
     def buscar_fornecedores(_self):
         if not _self.creds: return pd.DataFrame()
         conn = None
@@ -918,6 +920,7 @@ class DatabaseManager:
                 WHERE u.perfil = 'FORNECEDOR'
                   AND u.ativo  = TRUE
                 ORDER BY u.nome
+                LIMIT 100
             """
             df = pd.read_sql(query, conn)
             df.columns = [c.lower() for c in df.columns]
@@ -1154,6 +1157,15 @@ class AppClientePrime:
                 
                 /* Configurações Gerais */
                 .stApp { background-color: #FFFFFF !important; }
+                
+                /* Ocultar barra de ferramentas das tabelas */
+                [data-testid="stElementToolbar"] { display: none !important; }
+                button[title="View fullscreen"] { display: none !important; }
+                button[title="Download"] { display: none !important; }
+                button[title="Search"] { display: none !important; }
+                [data-testid="StyledFullScreenButton"] { display: none !important; }
+                div[data-testid="stDataFrame"] button { display: none !important; }
+                div[data-testid="stDataFrame"] [data-testid="stElementToolbar"] { display: none !important; }
                 
                 /* --- SIDEBAR --- */
                 section[data-testid="stSidebar"] { background-color: #121212 !important; border-right: 2px solid #0047AB !important; }
@@ -2793,9 +2805,9 @@ class AppClientePrime:
                     
                     # Mensagens de notificação sempre abaixo dos filtros
                     if modo_envio == "Fornecedores Específicos" and fornecedores_selecionados:
-                        st.info("📌 Itens de marcas não vendidas pelos fornecedores selecionados permanecerão com o fornecedor original.")
+                        st.info("📌 Itens vendidos por múltiplos fornecedores selecionados serão priorizados para o primeiro da lista. Itens não vendidos pelos fornecedores selecionados não serão enviados.")
                     elif modo_envio == "Fornecedor Único" and fornecedor_unico:
-                        st.info(f"📌 Serão enviados somente itens vendidos por {fornecedor_unico}.")
+                        st.info(f"📌 Serão enviados somente itens vendidos por {fornecedor_unico}. Itens não disponíveis no catálogo deste fornecedor não serão enviados.")
                     elif modo_envio == "Todos os Fornecedores":
                         st.info("📌 Modo 'Todos': Cada item será enviado para TODOS os fornecedores que vendem sua marca.")
                     
@@ -2809,39 +2821,55 @@ class AppClientePrime:
                             # Mostra "Todos" na coluna
                             df_final['fornecedor'] = "Todos"
                         elif modo_envio == "Fornecedores Específicos" and fornecedores_selecionados:
-                            # Para cada item, verifica TODOS os fornecedores selecionados que vendem a marca
+                            # Para cada item, atribui APENAS ao primeiro fornecedor selecionado que vende a marca
                             indices_manter = []
+                            itens_nao_enviados = []
                             for idx, row in df_final.iterrows():
                                 marca_item = str(row.get('marca', '')).upper()
-                                fornecedores_que_vendem = []
+                                fornecedor_atribuido = None
                                 
-                                # Verifica quais fornecedores selecionados vendem esta marca
+                                # Verifica fornecedores na ordem de seleção e atribui ao primeiro que vende
                                 for forn_sel in fornecedores_selecionados:
                                     marcas_forn = df_forn_db[df_forn_db['fornecedor'].str.strip() == forn_sel.strip()]['marca'].str.upper().tolist()
                                     if marca_item in marcas_forn:
-                                        fornecedores_que_vendem.append(forn_sel)
+                                        fornecedor_atribuido = forn_sel
+                                        break
                                 
-                                # Se pelo menos um fornecedor vende, adiciona o item
-                                if fornecedores_que_vendem:
-                                    df_final.at[idx, 'fornecedor'] = ', '.join(sorted(fornecedores_que_vendem))
+                                # Se encontrou fornecedor, atribui e mantém o item
+                                if fornecedor_atribuido:
+                                    df_final.at[idx, 'fornecedor'] = fornecedor_atribuido
                                     indices_manter.append(idx)
+                                else:
+                                    # Item não será enviado
+                                    itens_nao_enviados.append(f"{row.get('idproduto', '')} - {row.get('produto', '')}")
                             
                             # Remove itens que nenhum fornecedor selecionado vende
                             df_final = df_final.loc[indices_manter]
+                            
+                            # Informar sobre itens não enviados
+                            if itens_nao_enviados:
+                                st.warning(f"⚠️ {len(itens_nao_enviados)} item(ns) não fazem parte do catálogo dos fornecedores selecionados e não serão enviados.")
                         elif modo_envio == "Fornecedor Único" and fornecedor_unico:
                             # Buscar marcas do fornecedor único
                             marcas_forn_unico = df_forn_db[df_forn_db['fornecedor'] == fornecedor_unico]['marca'].str.upper().tolist()
                             
                             # Filtrar apenas itens que o fornecedor vende
                             indices_manter = []
+                            itens_nao_enviados = []
                             for idx, row in df_final.iterrows():
                                 marca_item = str(row.get('marca', '')).upper()
                                 if marca_item in marcas_forn_unico:
                                     df_final.at[idx, 'fornecedor'] = fornecedor_unico
                                     indices_manter.append(idx)
+                                else:
+                                    itens_nao_enviados.append(f"{row.get('idproduto', '')} - {row.get('produto', '')}")
                             
                             # Remove itens que o fornecedor não vende
                             df_final = df_final.loc[indices_manter]
+                            
+                            # Informar sobre itens não enviados
+                            if itens_nao_enviados:
+                                st.warning(f"⚠️ {len(itens_nao_enviados)} item(ns) não fazem parte do catálogo de {fornecedor_unico} e não serão enviados.")
                         else:
                             # Pré Definido: mantém o fornecedor original
                             pass
@@ -2892,7 +2920,9 @@ class AppClientePrime:
                     if modo_envio == "Todos os Fornecedores":
                         config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True)
                     elif modo_envio == "Fornecedores Específicos":
-                        config_fornecedor = st.column_config.TextColumn("Fornecedor(es)", disabled=True, help="Itens serão enviados para todos os fornecedores listados")
+                        config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True, help="Fornecedor selecionado que vende este item")
+                    elif modo_envio == "Fornecedor Único":
+                        config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True)
                     else:
                         config_fornecedor = st.column_config.SelectboxColumn("✏️ Fornecedor", options=lista_fornecedores, required=True)
                     
@@ -2996,12 +3026,11 @@ class AppClientePrime:
                                                     erros.append(forn)
                                                     logger.error(f"Erro ao enviar para {forn}: {e}")
                                         elif modo_envio == "Fornecedores Específicos":
-                                            # Para cada item, envia para todos os fornecedores listados
+                                            # Para cada fornecedor, envia apenas os itens atribuídos a ele
                                             for forn in fornecedores_selecionados:
                                                 try:
-                                                    # Filtra itens que este fornecedor deve receber
-                                                    # FIX: regex=False evita interpretar chars especiais como metacaracteres regex
-                                                    df_forn = df_envio[df_envio['fornecedor'].str.contains(forn, na=False, regex=False)].copy()
+                                                    # Filtra itens atribuídos especificamente a este fornecedor
+                                                    df_forn = df_envio[df_envio['fornecedor'] == forn].copy()
                                                     
                                                     if not df_forn.empty:
                                                         df_forn['Qtd Compra'] = df_forn['reposicao']
