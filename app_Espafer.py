@@ -1,4 +1,4 @@
-import bcrypt
+﻿import bcrypt
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -162,8 +162,7 @@ class DatabaseManager:
                 database=self.creds.get("database"),
                 user=self.creds.get("user") or self.creds.get("username"),
                 password=self.creds.get("password"),
-                port=int(self.creds.get("port", 5432)),
-                connect_timeout=10  # FIX: evita travar indefinidamente se o banco estiver inacessível
+                port=int(self.creds.get("port", 5432))
             )
         except psycopg2.OperationalError as e:
             logger.error(f"Erro de conexão com banco de dados: {e}")
@@ -242,12 +241,11 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
-    def buscar_pedidos_cliente(_self, cliente_nome=None):
+    def buscar_pedidos_cliente(self, cliente_nome=None):
         """Busca todos os pedidos do cliente (Pendente/Enviado/Confirmado)."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -258,10 +256,10 @@ class DatabaseManager:
                 WHERE 1=1
             """
             if cliente_nome:
-                query = base + " AND LOWER(pv.cliente_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " AND LOWER(pv.cliente_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn, params=(cliente_nome,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos do cliente: {e}")
@@ -269,12 +267,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
-    def buscar_pedidos_fornecedor(_self, nome_fornecedor=None):
+    def buscar_pedidos_fornecedor(self, nome_fornecedor=None):
         """Busca pedidos para orçamento (Pendente/Enviado). Se nome_fornecedor informado, filtra por ele."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -286,10 +283,10 @@ class DatabaseManager:
                 WHERE pv.status IN ('Pendente', 'Enviado')
             """
             if nome_fornecedor:
-                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn, params=(nome_fornecedor,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos: {e}")
@@ -297,12 +294,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
-    def buscar_pedidos_confirmados(_self, nome_fornecedor=None):
+    def buscar_pedidos_confirmados(self, nome_fornecedor=None):
         """Busca pedidos confirmados. Se nome_fornecedor informado, filtra por ele."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             base = """
                 SELECT pv.id,
                        pv.numero_pedido,
@@ -311,26 +307,42 @@ class DatabaseManager:
                        pv.status,
                        pv.data_criacao
                 FROM pedidos_vendas pv
-                WHERE pv.status = 'Confirmado'
+                WHERE pv.status IN ('Confirmado', 'Entregue')
             """
             if nome_fornecedor:
-                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " AND LOWER(pv.fornecedor_nome) = LOWER(%s) ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn, params=(nome_fornecedor,))
             else:
-                query = base + " ORDER BY pv.data_criacao DESC LIMIT 200"
+                query = base + " ORDER BY pv.data_criacao DESC"
                 return pd.read_sql(query, conn)
         except Exception as e:
             logger.error(f"Erro ao buscar pedidos confirmados: {e}")
             return pd.DataFrame()
         finally:
             if conn: conn.close()
+    
+    def marcar_pedido_entregue(self, pedido_id):
+        """Marca um pedido como Entregue."""
+        conn = None
+        try:
+            conn = self._get_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE pedidos_vendas SET status = 'Entregue' WHERE id = %s", (pedido_id,))
+            conn.commit()
+            cur.close()
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao marcar pedido {pedido_id} como entregue: {e}")
+            if conn: conn.rollback()
+            return False
+        finally:
+            if conn: conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=50)
-    def buscar_itens_pedido(_self, pedido_id):
+    def buscar_itens_pedido(self, pedido_id):
         """Busca os itens de um pedido específico."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             query = """
                 SELECT id, codigo_produto, nome_produto, quantidade,
                        COALESCE(valor_unitario, 0)  AS valor_unitario,
@@ -349,39 +361,36 @@ class DatabaseManager:
             if conn: conn.close()
 
     def salvar_resposta_pedido(self, pedido_id, itens_df, observacao=None):
-        """Salva valores preenchidos pelo fornecedor e marca pedido como Enviado. OTIMIZADO: batch update."""
+        """Salva valores preenchidos pelo fornecedor e marca pedido como Enviado."""
         conn = None
         try:
             conn = self._get_connection()
             cur = conn.cursor()
-            
-            # OTIMIZAÇÃO: UPDATE em batch usando executemany
-            update_data = [
-                (
+            for _, row in itens_df.iterrows():
+                cur.execute("""
+                    UPDATE pedidos_itens
+                       SET valor_unitario = %s,
+                           impostos       = %s,
+                           frete          = %s,
+                           prazo_entrega  = %s
+                     WHERE id = %s
+                """, (
                     float(row.get('valor_unitario') or 0),
-                    float(row.get('impostos') or 0),
-                    str(row.get('frete') or ''),
-                    str(row.get('prazo_entrega') or ''),
+                    float(row.get('impostos')       or 0),
+                    str(row.get('frete')            or ''),
+                    str(row.get('prazo_entrega')    or ''),
                     int(row['id'])
-                )
-                for _, row in itens_df.iterrows()
-            ]
-            
-            cur.executemany("""
-                UPDATE pedidos_itens
-                SET valor_unitario = %s, impostos = %s, frete = %s, prazo_entrega = %s
-                WHERE id = %s
-            """, update_data)
+                ))
             
             # Atualizar observação do pedido
             if observacao:
                 cur.execute("""
                     UPDATE pedidos_vendas 
-                    SET observacao = %s, status = %s 
+                    SET observacao = %s, status = 'Enviado' 
                     WHERE id = %s
-                """, (observacao, StatusPedido.ENVIADO, pedido_id))
+                """, (observacao, pedido_id))
             else:
-                cur.execute("UPDATE pedidos_vendas SET status = %s WHERE id = %s", (StatusPedido.ENVIADO, pedido_id))
+                cur.execute("UPDATE pedidos_vendas SET status = 'Enviado' WHERE id = %s", (pedido_id,))
             
             conn.commit()
             cur.close()
@@ -393,8 +402,9 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
+    #Se leu mamou
     def criar_pedido(self, cliente_nome, fornecedor_nome, itens_df, idcobertura=None):
-        """Cria um pedido novo e insere os itens. OTIMIZADO: batch insert."""
+        """Cria um pedido novo e insere os itens."""
         conn = None
         try:
             conn = self._get_connection()
@@ -413,9 +423,9 @@ class DatabaseManager:
             
             ultimo_numero = cur.fetchone()[0]
             
-            # Se não há pedidos hoje, começa com data + 1
+            # Se não há pedidos hoje, começa com data + 0
             if ultimo_numero == 0:
-                proximo_numero = int(data_hoje + '1')
+                proximo_numero = int(data_hoje + '0')
             else:
                 # Incrementa o último número
                 proximo_numero = ultimo_numero + 1
@@ -462,23 +472,23 @@ class DatabaseManager:
     
             pedido_id = cur.fetchone()[0]
     
-            # 5. OTIMIZAÇÃO: Inserir os Itens do Pedido em batch usando executemany
-            itens_data = [
-                (
+            # 5. Inserir os Itens do Pedido
+            for _, row in itens_df.iterrows():
+                qtd = row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0
+                cod_prod = str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0')
+                nome_prod = str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado')
+    
+                cur.execute("""
+                    INSERT INTO public.pedidos_itens
+                        (pedido_id, codigo_produto, nome_produto, quantidade,
+                         valor_unitario, impostos, frete, prazo_entrega)
+                    VALUES (%s, %s, %s, %s, NULL, NULL, NULL, NULL)
+                """, (
                     pedido_id,
-                    str(row.get('idproduto', '') or row.get('codigo_produto', '') or '0'),
-                    str(row.get('produto', '') or row.get('nome_produto', '') or 'Produto não identificado'),
-                    float(row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0) if str(row.get('Qtd Compra') or row.get('quantidade') or row.get('Quantidade') or 0).replace('.','').isdigit() else 0.0
-                )
-                for _, row in itens_df.iterrows()
-            ]
-            
-            cur.executemany("""
-                INSERT INTO public.pedidos_itens
-                    (pedido_id, codigo_produto, nome_produto, quantidade,
-                     valor_unitario, impostos, frete, prazo_entrega)
-                VALUES (%s, %s, %s, %s, NULL, NULL, NULL, NULL)
-            """, itens_data)
+                    cod_prod,
+                    nome_prod,
+                    float(qtd) if str(qtd).replace('.','').isdigit() else 0.0,
+                ))
     
             conn.commit()
             cur.close()
@@ -494,13 +504,13 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=5)
+    @st.cache_data(ttl=600)
     def buscar_filiais(_self):
         if not _self.creds: return []
         conn = None
         try:
             conn = _self._get_connection()
-            query = "SELECT DISTINCT nome_empresa FROM venda_itens_consolidado WHERE nome_empresa IS NOT NULL ORDER BY 1 LIMIT 100"
+            query = "SELECT DISTINCT nome_empresa FROM venda_itens_consolidado WHERE nome_empresa IS NOT NULL ORDER BY 1"
             df = pd.read_sql(query, conn)
             return df['nome_empresa'].tolist()
         except Exception as e:
@@ -509,13 +519,14 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
         
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=5)
+    @st.cache_data(ttl=600)
     def buscar_marcas(_self, filial=None):
         if not _self.creds: return []
         conn = None
         try:
             conn = _self._get_connection()
-            query = "SELECT DISTINCT marca FROM cad_produto WHERE marca IS NOT NULL AND marca != '' ORDER BY 1 LIMIT 200"
+            query = "SELECT DISTINCT marca FROM cad_produto WHERE marca IS NOT NULL AND marca != ''"
+            query += " ORDER BY 1"
             df = pd.read_sql(query, conn)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -524,7 +535,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=20)
+    @st.cache_data(ttl=600)
     def buscar_grupos(_self, filial=None, marca=None):
         if not _self.creds: return []
         conn = None
@@ -534,7 +545,7 @@ class DatabaseManager:
             params = []
             if marca and marca != "TODOS":
                 query += " AND marca = %s"; params.append(marca)
-            query += " ORDER BY 1 LIMIT 200"
+            query += " ORDER BY 1"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -543,7 +554,7 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=30)
+    @st.cache_data(ttl=600)
     def buscar_subgrupos(_self, filial=None, marca=None, grupo=None):
         if not _self.creds: return []
         conn = None
@@ -555,7 +566,7 @@ class DatabaseManager:
                 query += " AND marca = %s"; params.append(marca)
             if grupo and grupo != "TODOS":
                 query += " AND nome_grupo = %s"; params.append(grupo)
-            query += " ORDER BY 1 LIMIT 200"
+            query += " ORDER BY 1"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -564,10 +575,9 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=30)
+    @st.cache_data(ttl=600)
     def buscar_subgrupos1(_self, filial=None, marca=None, grupo=None, subgrupo=None):
         if not _self.creds: return []
-        conn = None
         try:
             conn = _self._get_connection()
             query = "SELECT DISTINCT nome_sub_grupo1 FROM cad_produto WHERE nome_sub_grupo1 IS NOT NULL AND nome_sub_grupo1 != ''"
@@ -580,16 +590,15 @@ class DatabaseManager:
             if subgrupo and subgrupo != "TODOS":
                 query += " AND nome_sub_grupo = %s"; params.append(subgrupo)
                 
-            query += " ORDER BY 1 LIMIT 200"
+            query += " ORDER BY 1"
             df = pd.read_sql(query, conn, params=params)
+            conn.close()
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
             logger.error(f"Erro ao buscar subgrupo1: {e}")
             return []
-        finally:
-            if conn: conn.close()
 
-    @st.cache_data(ttl=14400, show_spinner=False, max_entries=50)
+    @st.cache_data(ttl=600)
     def buscar_produtos(_self, filial=None, marca=None, grupo=None, subgrupo=None, subgrupo1=None):
         if not _self.creds: return []
         conn = None
@@ -605,7 +614,7 @@ class DatabaseManager:
                 query += " AND nome_sub_grupo = %s"; params.append(subgrupo)
             if subgrupo1 and subgrupo1 != "TODOS":
                 query += " AND nome_sub_grupo1 = %s"; params.append(subgrupo1)
-            query += " ORDER BY 1 LIMIT 500"
+            query += " ORDER BY 1"
             df = pd.read_sql(query, conn, params=params)
             return df.iloc[:, 0].tolist() if not df.empty else []
         except Exception as e:
@@ -614,12 +623,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
-    def buscar_pedidos_respondidos(_self, cliente_nome=None):
+    def buscar_pedidos_respondidos(self, cliente_nome=None):
         """Busca pedidos com status Enviado agrupados por idcobertura."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             query = """
                 SELECT 
                     idcobertura as grupo_pedido,
@@ -632,7 +640,7 @@ class DatabaseManager:
             """
             if cliente_nome:
                 query += " AND LOWER(cliente_nome) = LOWER(%s)"
-            query += " GROUP BY idcobertura ORDER BY MIN(data_criacao) DESC LIMIT 100"
+            query += " GROUP BY idcobertura ORDER BY MIN(data_criacao) DESC"
             
             if cliente_nome:
                 return pd.read_sql(query, conn, params=(cliente_nome,))
@@ -644,12 +652,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
-    def buscar_detalhes_comparativo(_self, idcobertura):
+    def buscar_detalhes_comparativo(self, idcobertura):
         """Busca detalhes de todos os fornecedores de um idcobertura."""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             query = """
                 SELECT 
                     pv.fornecedor_nome,
@@ -673,15 +680,14 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
     
-    @st.cache_data(ttl=60, show_spinner=False, max_entries=20)
-    def buscar_notificacoes(_self, nome_usuario, perfil):
+    def buscar_notificacoes(self, nome_usuario, perfil):
         """Busca notificações para o usuário baseado no perfil"""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             
             # Buscar notificações removidas do usuário
-            notif_removidas = _self.buscar_notificacoes_removidas(nome_usuario)
+            notif_removidas = self.buscar_notificacoes_removidas(nome_usuario)
             
             notificacoes = []
             
@@ -700,9 +706,7 @@ class DatabaseManager:
                     if notif_id in notif_removidas:
                         continue
                         
-                    _dc = pd.to_datetime(row['data_criacao'])
-                    if _dc.tzinfo is not None: _dc = _dc.tz_localize(None)
-                    dias = (datetime.datetime.now() - _dc).days
+                    dias = (datetime.datetime.now() - pd.to_datetime(row['data_criacao'])).days
                     
                     if row['status'] == 'Enviado':
                         notificacoes.append({
@@ -751,8 +755,8 @@ class DatabaseManager:
                                 'icone': '⚠️',
                                 'cor': '#CC5500'
                             })
-                except Exception as e:
-                    logger.warning(f'Tabela notificacoes_fornecedor inexistente ou sem permissao: {e}')
+                except:
+                    pass
                 
                 # Buscar pedidos pendentes
                 query = """
@@ -789,12 +793,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
     
-    @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
-    def buscar_notificacoes_removidas(_self, nome_usuario):
+    def buscar_notificacoes_removidas(self, nome_usuario):
         """Busca IDs de notificações removidas pelo usuário"""
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             cur = conn.cursor()
             
             cur.execute("""
@@ -912,7 +915,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    @st.cache_data(ttl=7200, show_spinner=False, max_entries=3)
+    @st.cache_data(ttl=300)
     def buscar_fornecedores(_self):
         if not _self.creds: return pd.DataFrame()
         conn = None
@@ -921,14 +924,13 @@ class DatabaseManager:
             query = """
                 SELECT
                     u.nome                          AS fornecedor,
-                    COALESCE(f.marca, '')           AS marca
+                    COALESCE(NULLIF(TRIM(f.marca), ''), NULL) AS marca
                 FROM usuarios_sistema u
                 LEFT JOIN fornecedores f
                     ON LOWER(TRIM(f.fornecedor)) = LOWER(TRIM(u.nome))
                 WHERE u.perfil = 'FORNECEDOR'
                   AND u.ativo  = TRUE
                 ORDER BY u.nome
-                LIMIT 100
             """
             df = pd.read_sql(query, conn)
             df.columns = [c.lower() for c in df.columns]
@@ -939,48 +941,44 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
-    def verificar_produtos_fornecedor(_self, fornecedor_nome, lista_produtos):
-        """Verifica quais produtos da lista o fornecedor possui (baseado na marca).
-        FIX: substituido loop N+1 por uma unica query IN para todos os produtos.
-        """
-        if not _self.creds or not lista_produtos: return set(), set()
+    def verificar_produtos_fornecedor(self, fornecedor_nome, lista_produtos):
+        """Verifica quais produtos da lista o fornecedor possui (baseado na marca)"""
+        if not self.creds or not lista_produtos: return set(), set()
         conn = None
         try:
-            conn = _self._get_connection()
-            # Buscar marcas do fornecedor
-            query_marcas = """
+            conn = self._get_connection()
+            query = """
                 SELECT DISTINCT TRIM(UPPER(f.marca)) as marca
                 FROM fornecedores f
                 WHERE LOWER(TRIM(f.fornecedor)) = LOWER(TRIM(%s))
                   AND f.marca IS NOT NULL AND f.marca != ''
             """
-            df_marcas = pd.read_sql(query_marcas, conn, params=(fornecedor_nome,))
+            df_marcas = pd.read_sql(query, conn, params=(fornecedor_nome,))
             marcas_fornecedor = set(df_marcas['marca'].tolist()) if not df_marcas.empty else set()
-
+            
             if not marcas_fornecedor:
                 return set(), set(lista_produtos)
-
-            # FIX N+1: buscar marcas de TODOS os produtos em uma unica query usando ANY
-            ids_str = [str(p).strip() for p in lista_produtos]
-            query_prods = """
-                SELECT TRIM(CAST(codacessog AS TEXT)) as cod,
-                       TRIM(UPPER(marca)) as marca
-                FROM cad_produto
-                WHERE TRIM(CAST(codacessog AS TEXT)) = ANY(%s)
-            """
-            df_prods = pd.read_sql(query_prods, conn, params=(ids_str,))
-            mapa_marca = dict(zip(df_prods['cod'], df_prods['marca'])) if not df_prods.empty else {}
-
+            
             possui = set()
             nao_possui = set()
+            
             for prod_id in lista_produtos:
-                marca_prod = mapa_marca.get(str(prod_id).strip())
-                if marca_prod and marca_prod in marcas_fornecedor:
-                    possui.add(prod_id)
+                query_prod = """
+                    SELECT TRIM(UPPER(marca)) as marca
+                    FROM cad_produto
+                    WHERE TRIM(CAST(codacessog AS TEXT)) = %s
+                    LIMIT 1
+                """
+                df_prod = pd.read_sql(query_prod, conn, params=(str(prod_id).strip(),))
+                if not df_prod.empty:
+                    marca_prod = df_prod['marca'].iloc[0]
+                    if marca_prod in marcas_fornecedor:
+                        possui.add(prod_id)
+                    else:
+                        nao_possui.add(prod_id)
                 else:
                     nao_possui.add(prod_id)
-
+            
             return possui, nao_possui
         except Exception as e:
             logger.error(f"Erro ao verificar produtos do fornecedor: {e}")
@@ -988,12 +986,11 @@ class DatabaseManager:
         finally:
             if conn: conn.close()
 
-    @st.cache_data(ttl=600, show_spinner=False, max_entries=100)
-    def consultar_cobertura(_self, filial, marca, grupo, subgrupo, subgrupo1, produto, dias_alvo, dias_corte, modo):
-        if not _self.creds: return pd.DataFrame()
+    def consultar_cobertura(self, filial, marca, grupo, subgrupo, subgrupo1, produto, dias_alvo, dias_corte, modo):
+        if not self.creds: return pd.DataFrame()
         conn = None
         try:
-            conn = _self._get_connection()
+            conn = self._get_connection()
             # Garante valores numéricos limpos — sem interpolação de strings
             d_alv = int(float(dias_alvo)) if dias_alvo > 0 else 35
             d_cor = float(dias_corte) if dias_corte >= 0 else 0.0
@@ -1053,7 +1050,7 @@ class DatabaseManager:
                     TRIM(CAST(c.codacessog AS TEXT)) as "idproduto",
                     c.nome as produto,
                     c.marca,
-                    COALESCE(f.fornecedor, f2.fornecedor) as fornecedor,
+                    f.fornecedor,
                     c.nome_grupo as grupo,
                     c.nome_sub_grupo as subgrupo,
                     c.nome_sub_grupo1 as subgrupo1,
@@ -1069,7 +1066,6 @@ class DatabaseManager:
                 LEFT JOIN est e ON TRIM(CAST(c.codigo AS TEXT)) = e.cod
                 LEFT JOIN ven v ON TRIM(CAST(c.codacessog AS TEXT)) = v.cod
                 LEFT JOIN fornecedores f ON TRIM(UPPER(c.marca)) = TRIM(UPPER(f.marca))
-                LEFT JOIN fornecedores f2 ON (c.marca IS NULL OR TRIM(c.marca) = '') AND TRIM(UPPER(f2.marca)) = ''
             )
             SELECT {colunas_selecionadas} FROM (
                 SELECT *, {rep_sql} as reposicao FROM base
@@ -1139,26 +1135,16 @@ class AppClientePrime:
     def inicializar_estado(self):
         perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
         menu_default = "Pedidos" if perfil == "FORNECEDOR" else "Gerar Cobertura"
-        
-        # Inicialização consolidada de estados
-        estados_default = {
-            'menu_ativo': menu_default,
-            'modo_analise_atual': "COMPRA",
-            'tentativas_login': 0,
-            'perfil_usuario': "CLIENTE",
-            'db_fornecedores': {},
-            'itens_removidos': [],
-            'dados_orcamento': None,
-            'df_analise_cache': pd.DataFrame(),
-            'filtros_anteriores': None,
-            'filtrar_sem_fornecedor': False,
-            'cache_qtd_itens': {},
-            'pedidos_com_alteracao': set()
-        }
-        
-        for key, default_value in estados_default.items():
-            if key not in st.session_state:
-                st.session_state[key] = default_value
+        if 'menu_ativo' not in st.session_state: st.session_state.menu_ativo = menu_default
+        if 'modo_analise_atual' not in st.session_state: st.session_state.modo_analise_atual = "COMPRA"
+        if 'tentativas_login' not in st.session_state: st.session_state.tentativas_login = 0
+        if 'perfil_usuario' not in st.session_state: st.session_state.perfil_usuario = "CLIENTE"
+        if 'db_fornecedores' not in st.session_state: st.session_state.db_fornecedores = {}
+        if 'itens_removidos' not in st.session_state: st.session_state.itens_removidos = []
+        if 'dados_orcamento' not in st.session_state: st.session_state.dados_orcamento = None
+        if 'df_analise_cache' not in st.session_state: st.session_state.df_analise_cache = pd.DataFrame()  # FIX: evita KeyError na primeira execução
+        if 'filtros_anteriores' not in st.session_state: st.session_state.filtros_anteriores = None
+        if 'filtrar_sem_fornecedor' not in st.session_state: st.session_state.filtrar_sem_fornecedor = False
 
     def aplicar_estilos(self):
         st.markdown("""
@@ -1167,15 +1153,6 @@ class AppClientePrime:
                 
                 /* Configurações Gerais */
                 .stApp { background-color: #FFFFFF !important; }
-                
-                /* Ocultar barra de ferramentas das tabelas */
-                [data-testid="stElementToolbar"] { display: none !important; }
-                button[title="View fullscreen"] { display: none !important; }
-                button[title="Download"] { display: none !important; }
-                button[title="Search"] { display: none !important; }
-                [data-testid="StyledFullScreenButton"] { display: none !important; }
-                div[data-testid="stDataFrame"] button { display: none !important; }
-                div[data-testid="stDataFrame"] [data-testid="stElementToolbar"] { display: none !important; }
                 
                 /* --- SIDEBAR --- */
                 section[data-testid="stSidebar"] { background-color: #121212 !important; border-right: 2px solid #0047AB !important; }
@@ -1288,8 +1265,7 @@ class AppClientePrime:
                     AND LOWER(nf.fornecedor) = LOWER(%s)
                 """, (pedido_id, fornecedor_nome))
                 return cur.fetchone() is not None
-        except Exception as e:
-            logger.error(f"Erro ao verificar urgencia do pedido {pedido_id}: {e}")
+        except:
             return False
 
     def render_sidebar(self):
@@ -1378,40 +1354,39 @@ class AppClientePrime:
 
             # ── MENUS POR PERFIL ──────────────────────────────────────
             if perfil in ("ADM", "CLIENTE"):
+                # Buscar notificações para contar
+                notificacoes = self.db.buscar_notificacoes(st.session_state.nome_usuario, perfil)
+                notif_orcamento = sum(1 for n in notificacoes if n['tipo'] == 'orcamento_enviado')
+                notif_inteligencia = sum(1 for n in notificacoes if n['tipo'] == 'orcamento_enviado')
+                
                 with st.expander("PEDIDO DE COMPRA", expanded=True):
                     opcoes = ["Gerar Cobertura", "Meus Pedidos", "Inteligência de Compra"]
+                    badges = {"Meus Pedidos": 0, "Inteligência de Compra": notif_inteligencia}
+                    
                     for opt in opcoes:
                         tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
-                        if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
-                            # Limpar caches ao trocar de menu
-                            if st.session_state.menu_ativo != opt:
-                                keys_to_clear = [k for k in st.session_state.keys() if k.startswith('lista_') or k.startswith('cache_') or k.startswith('detalhes_')]
-                                for key in keys_to_clear:
-                                    del st.session_state[key]
-                                if 'pedido_aberto' in st.session_state:
-                                    del st.session_state['pedido_aberto']
-                                if 'pedido_confirmado_aberto' in st.session_state:
-                                    del st.session_state['pedido_confirmado_aberto']
-                                if 'solicitacao_aberta' in st.session_state:
-                                    del st.session_state['solicitacao_aberta']
+                        badge_count = badges.get(opt, 0)
+                        label = f"{opt} ({badge_count})" if badge_count > 0 else opt
+                        
+                        if st.button(label, key=f"sub_{opt}", type=tipo, use_container_width=True):
                             st.session_state.menu_ativo = opt
                             st.rerun()
 
             if perfil in ("ADM", "FORNECEDOR"):
+                # Buscar notificações para contar
+                notificacoes = self.db.buscar_notificacoes(st.session_state.nome_usuario, perfil)
+                notif_orcamento = sum(1 for n in notificacoes if n['tipo'] in ['novo_pedido', 'cobranca_pedido'])
+                
                 with st.expander("FORNECEDOR", expanded=(perfil == "FORNECEDOR")):
                     opcoes_forn = ["Orçamento", "Pedidos"]
+                    badges = {"Orçamento": notif_orcamento, "Pedidos": 0}
+                    
                     for opt in opcoes_forn:
                         tipo = "primary" if st.session_state.menu_ativo == opt else "secondary"
-                        if st.button(opt, key=f"sub_{opt}", type=tipo, use_container_width=True):
-                            # Limpar caches ao trocar de menu
-                            if st.session_state.menu_ativo != opt:
-                                keys_to_clear = [k for k in st.session_state.keys() if k.startswith('lista_') or k.startswith('cache_')]
-                                for key in keys_to_clear:
-                                    del st.session_state[key]
-                                if 'pedido_aberto' in st.session_state:
-                                    del st.session_state['pedido_aberto']
-                                if 'pedido_confirmado_aberto' in st.session_state:
-                                    del st.session_state['pedido_confirmado_aberto']
+                        badge_count = badges.get(opt, 0)
+                        label = f"{opt} ({badge_count})" if badge_count > 0 else opt
+                        
+                        if st.button(label, key=f"sub_{opt}", type=tipo, use_container_width=True):
                             st.session_state.menu_ativo = opt
                             st.rerun()
 
@@ -1456,6 +1431,28 @@ class AppClientePrime:
                             st.session_state.dados_orcamento.loc[mask, col] = value
                     except Exception as e:
                         logger.error(f"Erro ao salvar edição: {e}")
+    
+    def salvar_edicoes_cobertura(self):
+        """Salva edições feitas na tabela de cobertura (fornecedor e quantidade)"""
+        if "editor_cobertura" in st.session_state:
+            state = st.session_state["editor_cobertura"]
+            edited_rows = state.get("edited_rows", {})
+            
+            if 'df_analise_cache' not in st.session_state or st.session_state.df_analise_cache.empty:
+                return
+            
+            # Aplicar alterações ao cache
+            for idx_str, changes in edited_rows.items():
+                try:
+                    idx = int(idx_str)
+                    if idx >= len(st.session_state.df_analise_cache):
+                        continue
+                    
+                    for col, value in changes.items():
+                        st.session_state.df_analise_cache.at[idx, col] = value
+                        logger.info(f"Alteração salva: linha {idx}, coluna {col}, valor {value}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar edição na cobertura: {e}")
 
     def gerar_pdf_cotacao(self, fornecedor, grupo_itens):
         pdf = PDFGenerator.criar_pdf_base(fornecedor=fornecedor)
@@ -1666,19 +1663,6 @@ class AppClientePrime:
             .black-text { color: #333333 !important; font-weight: 500; }
             .pedido-num-bold { color: #0047AB !important; font-weight: 900; }
             .header-title { color: #000000 !important; font-weight: 800; font-size: 1rem; }
-            /* Botão de download PDF com mesmo estilo dos botões normais */
-            .stDownloadButton button {
-                background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
-                color: white !important;
-                border: none !important;
-                font-weight: 700 !important;
-                transition: transform 0.2s ease-in-out !important;
-            }
-            .stDownloadButton button:hover {
-                background: linear-gradient(135deg, #0047AB 0%, #000000 150%) !important;
-                color: white !important;
-                transform: scale(1.02) !important;
-            }
             </style>
         """, unsafe_allow_html=True)
         
@@ -1705,17 +1689,13 @@ class AppClientePrime:
                 if not df_itens.empty:
                     st.dataframe(df_itens[['codigo_produto', 'nome_produto', 'quantidade']], use_container_width=True, hide_index=True)
                 
-                col_voltar, col_pdf = st.columns(2)
-                with col_voltar:
-                    if st.button("← Voltar para Lista", type="secondary", use_container_width=True):
-                        del st.session_state['pedido_cliente_aberto']
-                        cache_key_lista = f'lista_pedidos_cliente_{cliente_nome}'
-                        if cache_key_lista in st.session_state:
-                            del st.session_state[cache_key_lista]
-                        st.rerun()
-                with col_pdf:
-                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens)
-                    st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True, type="primary")
+                if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
+                    del st.session_state['pedido_cliente_aberto']
+                    # Limpar cache para recarregar
+                    cache_key_lista = f'lista_pedidos_cliente_{cliente_nome}'
+                    if cache_key_lista in st.session_state:
+                        del st.session_state[cache_key_lista]
+                    st.rerun()
             return
         
         # MODO LISTA - Mostrar todos os pedidos
@@ -1728,8 +1708,45 @@ class AppClientePrime:
             st.info("Nenhum pedido encontrado.")
             return
         
+        # Ordenar por prioridade de status e data
+        df_pedidos['data_criacao'] = pd.to_datetime(df_pedidos['data_criacao'])
+        df_pedidos['dias_desde_criacao'] = (datetime.datetime.now() - df_pedidos['data_criacao']).dt.days
+        
+        # Criar coluna de prioridade: Urgente(1) > Atenção(2) > Pendente(3) > Enviado(4) > Confirmado(5) > Entregue(6) > Cancelado(7)
+        def calcular_prioridade(row):
+            if row['status'] == 'Pendente':
+                if row['dias_desde_criacao'] >= 7:
+                    return 1  # Urgente
+                elif row['dias_desde_criacao'] >= 3:
+                    return 2  # Atenção
+                else:
+                    return 3  # Pendente normal
+            elif row['status'] == 'Enviado':
+                return 4
+            elif row['status'] == 'Confirmado':
+                return 5
+            elif row['status'] == 'Entregue':
+                return 6
+            elif row['status'] == 'Cancelado':
+                return 7
+            else:
+                return 8  # Outros status
+        
+        df_pedidos['prioridade'] = df_pedidos.apply(calcular_prioridade, axis=1)
+        df_pedidos = df_pedidos.sort_values(by=['prioridade', 'data_criacao'], ascending=[True, False])
+        
+        # Filtro de status
+        col_filtro1, col_filtro2 = st.columns([2, 8])
+        with col_filtro1:
+            status_opcoes = ["Todos"] + sorted(df_pedidos['status'].unique().tolist())
+            filtro_status = st.selectbox("Filtrar por Status:", status_opcoes, key="filtro_status_pedidos")
+        
+        # Aplicar filtro
+        if filtro_status != "Todos":
+            df_pedidos = df_pedidos[df_pedidos['status'] == filtro_status]
+        
         # Legenda de cores
-        st.info("INFO: 🔵 **Azul:** Orçamento enviado | 🟢 **Verde:** Pedido confirmado | 🟡 **Amarelo:** Pedido recente (até 2 dias) | 🟠 **Laranja:** Atenção necessária (3-6 dias) | 🔴 **Vermelho:** Urgente (7+ dias)")
+        st.info("INFO: 🟢 **Verde:** Confirmado | 🔵 **Azul:** Enviado/Entregue | 🟡 **Amarelo:** Pendente | 🟠 **Laranja:** Pendente (Atenção) | 🔴 **Vermelho:** Pendente (Urgente) ou Cancelado")
         
         with st.container(border=True):
             c_num, c_forn, c_status, c_data, c_acao = st.columns([1.5, 2.5, 1.5, 1.8, 1.5])
@@ -1737,7 +1754,7 @@ class AppClientePrime:
             c_forn.markdown('<div class="header-title">Fornecedor</div>', unsafe_allow_html=True)
             c_status.markdown('<div class="header-title" style="text-align: center;">Status</div>', unsafe_allow_html=True)
             c_data.markdown('<div class="header-title" style="text-align: center;">Data</div>', unsafe_allow_html=True)
-            c_acao.markdown('<div class="header-title" style="text-align: center;">Ações</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title" style="text-align: center;">Ação</div>', unsafe_allow_html=True)
             st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
             
             for _, row in df_pedidos.iterrows():
@@ -1746,26 +1763,34 @@ class AppClientePrime:
                 fornecedor = str(row['fornecedor_nome'])
                 status = str(row['status'])
                 data_criacao = pd.to_datetime(row['data_criacao'])
-                # FIX: normalizar timezone — evita TypeError ao subtrair datetime naive de tz-aware
-                if data_criacao.tzinfo is not None:
-                    data_criacao = data_criacao.tz_localize(None)
                 data_str = data_criacao.strftime('%d/%m/%Y')
                 
                 # Calcular dias desde criação
                 dias_desde_criacao = (datetime.datetime.now() - data_criacao).days
                 
-                # Badge de status com cores dinâmicas para Pendente
+                # Badge de status com cores dinâmicas
                 if status == "Confirmado":
                     badge_bg, badge_txt = "#D4EDDA", "#155724"  # Verde
+                    status_texto = "Confirmado"
                 elif status == "Enviado":
-                    badge_bg, badge_txt = "#D1ECF1", "#0C5460"  # Azul
-                else:  # Pendente
+                    badge_bg, badge_txt = "#CCE5FF", "#004085"  # Azul
+                    status_texto = "Enviado"
+                elif status == "Entregue":
+                    badge_bg, badge_txt = "#CCE5FF", "#004085"  # Azul
+                    status_texto = "Entregue"
+                elif status == "Cancelado":
+                    badge_bg, badge_txt = "#F8D7DA", "#721C24"  # Vermelho
+                    status_texto = "Cancelado"
+                else:  # Pendente - cores baseadas em dias
                     if dias_desde_criacao >= 7:
                         badge_bg, badge_txt = "#FFCCCC", "#8B0000"  # Vermelho
+                        status_texto = "Pendente (Urgente)"
                     elif dias_desde_criacao >= 3:
                         badge_bg, badge_txt = "#FFE5CC", "#CC5500"  # Laranja
+                        status_texto = "Pendente (Atenção)"
                     else:
                         badge_bg, badge_txt = "#FFF3CD", "#856404"  # Amarelo
+                        status_texto = "Pendente"
                 
                 pedido_aberto = st.session_state.get('pedido_cliente_aberto')
                 esta_aberto = (pedido_aberto == pedido_id)
@@ -1778,21 +1803,19 @@ class AppClientePrime:
                 col_s.markdown(f'''
                     <div style="background:{badge_bg}; color:{badge_txt}; padding:4px 8px; 
                     border-radius:12px; font-size:0.8rem; font-weight:bold; text-align:center; margin-top:8px;">
-                        {status}
+                        {status_texto}
                     </div>
                 ''', unsafe_allow_html=True)
                 col_d.markdown(f'<div class="black-text" style="padding-top:8px; text-align:center;">{data_str}</div>', unsafe_allow_html=True)
                 
                 # Botões de ação baseados no status e dias
                 if status == "Pendente" and dias_desde_criacao >= 3:
-                    # Mostrar três botões: Visualizar, Notificar e PDF
-                    col_a1, col_a2, col_a3 = col_a.columns(3)
-                    texto_botao = "✖" if esta_aberto else "Visualizar"
+                    # Mostrar dois botões: Ver Detalhes e Notificar
+                    col_a1, col_a2 = col_a.columns(2)
+                    texto_botao = "✖" if esta_aberto else "Ver"
                     if col_a1.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
                         if pedido_aberto == pedido_id:
                             del st.session_state['pedido_cliente_aberto']
-                            if cache_key_lista in st.session_state:
-                                del st.session_state[cache_key_lista]
                         else:
                             st.session_state['pedido_cliente_aberto'] = pedido_id
                         st.rerun()
@@ -1801,21 +1824,11 @@ class AppClientePrime:
                             st.toast(f"🔔 Notificação enviada para {fornecedor}!", icon="✅")
                         else:
                             st.toast(f"❌ Erro ao enviar notificação", icon="⚠️")
-                    df_itens_pdf = self.db.buscar_itens_pedido(pedido_id)
-                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens_pdf)
-                    if col_a3.button("PDF", key=f"pdf_cli_{pedido_id}", use_container_width=True):
-                        pass  # Download button não precisa de ação
-                    col_a3.download_button("PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", key=f"pdf_dl_{pedido_id}", use_container_width=True)
                 else:
-                    # Mostrar dois botões: Visualizar e PDF
-                    col_a1, col_a2 = col_a.columns(2)
-                    texto_botao = "✖ Fechar" if esta_aberto else "Visualizar"
-                    if col_a1.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
+                    texto_botao = "✖ Fechar" if esta_aberto else "Ver Detalhes"
+                    if col_a.button(texto_botao, key=f"ver_cli_{pedido_id}", use_container_width=True):
                         st.session_state['pedido_cliente_aberto'] = pedido_id
                         st.rerun()
-                    df_itens_pdf = self.db.buscar_itens_pedido(pedido_id)
-                    pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_itens_pdf)
-                    col_a2.download_button("PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", key=f"pdf_cli_{pedido_id}", use_container_width=True)
         
         # Fim da lista
 
@@ -1834,18 +1847,26 @@ class AppClientePrime:
 
         df_forn_db['fornecedor'] = df_forn_db['fornecedor'].astype(str).str.strip()
         df_forn_db['marca_aux']  = df_forn_db['marca'].astype(str).str.strip().str.upper()
+        df_forn_db['marca_aux']  = df_forn_db['marca_aux'].replace(['', 'NAN', 'NONE'], pd.NA)
+        
+        # DEBUG: Log dos fornecedores e suas marcas
+        logger.info(f"Fornecedores carregados: {len(df_forn_db)}")
+        for _, row in df_forn_db.iterrows():
+            logger.info(f"Fornecedor: {row['fornecedor']}, Marca: {row['marca_aux']}")
 
-        # mapa marca → fornecedores que atendem aquela marca
+        # mapa marca → fornecedores
         mapa_marca_forn = (
-            df_forn_db[df_forn_db['marca_aux'].notna() & (df_forn_db['marca_aux'] != '')]
-            .groupby('marca_aux')['fornecedor']
+            df_forn_db.groupby('marca_aux')['fornecedor']
             .apply(lambda x: sorted(set(x)))
             .to_dict()
         )
+        
+        # DEBUG: Log do mapa
+        logger.info(f"Mapa marca->fornecedor: {mapa_marca_forn}")
+        
         # mapa inverso: fornecedor → suas marcas
         mapa_forn_marcas = (
-            df_forn_db[df_forn_db['marca_aux'].notna() & (df_forn_db['marca_aux'] != '')]
-            .groupby('fornecedor')['marca_aux']
+            df_forn_db.groupby('fornecedor')['marca_aux']
             .apply(set)
             .to_dict()
         )
@@ -1861,6 +1882,7 @@ class AppClientePrime:
         # ── Prepara dados ─────────────────────────────────────────
         df_master = st.session_state.dados_orcamento.copy()
         df_master['marca_aux']  = df_master['marca'].astype(str).str.strip().str.upper()
+        df_master['marca_aux']  = df_master['marca_aux'].replace(['', 'NAN', 'NONE'], pd.NA)
         df_master['cat_filtro'] = (
             df_master['marca'].fillna("SEM MARCA").astype(str).str.upper()
             if 'marca' in df_master.columns else "SEM MARCA"
@@ -1892,14 +1914,14 @@ class AppClientePrime:
         FORNECEDOR_PADRAO = "Natan Zimmer 99"
 
         def _sugerir_por_marca(marca_up):
-            """Retorna fornecedores que atendem esta marca. Sem marca ou sem match → fornecedor padrão."""
-            if not marca_up or marca_up in ('', 'NAN', 'NONE', 'NAO DEFINIDO'):
-                return [FORNECEDOR_PADRAO]
-            resultado = mapa_marca_forn.get(marca_up, [])
-            return resultado if resultado else [FORNECEDOR_PADRAO]
+            """Retorna fornecedores que atendem esta marca."""
+            return mapa_marca_forn.get(marca_up, [FORNECEDOR_PADRAO])
 
         if modo_envio == "Auto (por Marca)":
-            df_master['Fornecedor'] = df_master['marca_aux'].apply(_sugerir_por_marca)
+            df_master['Fornecedor'] = df_master.apply(
+                lambda row: _sugerir_por_marca(row['marca_aux']),
+                axis=1
+            )
         else:
             # Atribui fornecedor apenas para produtos que ele possui
             df_master['Fornecedor'] = df_master.apply(
@@ -1987,7 +2009,7 @@ class AppClientePrime:
                             st.error(f"❌ Erro ao registrar pedido para **{forn}**: `{e}`")
 
                 if enviados:
-                    st.toast(f"✅ {enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
+                    st.toast(f"{enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
                     st.session_state.dados_orcamento = None
                 if erros:
                     st.error(f"Falha ao registrar pedido para: {', '.join(erros)}")
@@ -2073,18 +2095,26 @@ class AppClientePrime:
 
         # Lista de pedidos confirmados
         with st.container(border=True):
-            c_num, c_cli, c_data, c_acao = st.columns([2, 3, 2, 2])
+            c_num, c_cli, c_status, c_data, c_acao = st.columns([1.5, 2.5, 1.5, 1.8, 1.5])
             c_num.markdown('<div class="header-title">Pedido</div>', unsafe_allow_html=True)
             c_cli.markdown('<div class="header-title">Cliente</div>', unsafe_allow_html=True)
-            c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
-            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            c_status.markdown('<div class="header-title" style="text-align: center;">Status</div>', unsafe_allow_html=True)
+            c_data.markdown('<div class="header-title" style="text-align: center;">Data</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title" style="text-align: center;">Ação</div>', unsafe_allow_html=True)
             st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
             for _, row in df_pedidos.iterrows():
                 pedido_id = int(row['id'])
                 num = str(row['numero_pedido'])
                 cliente = str(row['cliente_nome'])
+                status = str(row['status'])
                 data_str = pd.to_datetime(row['data_criacao']).strftime('%d/%m/%Y') if row['data_criacao'] else '-'
+                
+                # Badge de status
+                if status == "Entregue":
+                    badge_bg, badge_txt = "#CCE5FF", "#004085"  # Azul para Entregue
+                else:
+                    badge_bg, badge_txt = "#D4EDDA", "#155724"  # Verde para Confirmado
                 
                 # Verificar se este pedido está aberto
                 pedido_aberto = st.session_state.get('pedido_confirmado_aberto')
@@ -2093,15 +2123,38 @@ class AppClientePrime:
                 # Estilo de fundo apenas para coluna de pedido
                 estilo_pedido = 'background-color: #E3F2FD; border-left: 4px solid #0047AB; padding: 8px; border-radius: 5px;' if esta_aberto else 'padding-top:8px;'
                 
-                col_n, col_c, col_d, col_a = st.columns([2, 3, 2, 2])
+                col_n, col_c, col_s, col_d, col_a = st.columns([1.5, 2.5, 1.5, 1.8, 1.5])
                 col_n.markdown(f'<div style="{estilo_pedido}"><div class="pedido-num-bold">#{num}</div></div>', unsafe_allow_html=True)
                 col_c.markdown(f'<div class="black-text" style="padding-top:8px;">{cliente}</div>', unsafe_allow_html=True)
-                col_d.markdown(f'<div class="black-text" style="padding-top:8px;">{data_str}</div>', unsafe_allow_html=True)
+                col_s.markdown(f'''
+                    <div style="background:{badge_bg}; color:{badge_txt}; padding:4px 8px; 
+                    border-radius:12px; font-size:0.8rem; font-weight:bold; text-align:center; margin-top:8px;">
+                        {status}
+                    </div>
+                ''', unsafe_allow_html=True)
+                col_d.markdown(f'<div class="black-text" style="padding-top:8px; text-align:center;">{data_str}</div>', unsafe_allow_html=True)
                 
-                if col_a.button("Ver Detalhes", key=f"ver_conf_{pedido_id}", use_container_width=True):
-                    st.session_state['pedido_confirmado_aberto'] = pedido_id
-                    self._marcar_pedido_visualizado(pedido_id)
-                    st.rerun()
+                # Botões de ação
+                if status == "Confirmado":
+                    col_a1, col_a2 = col_a.columns(2)
+                    if col_a1.button("Ver", key=f"ver_conf_{pedido_id}", use_container_width=True):
+                        st.session_state['pedido_confirmado_aberto'] = pedido_id
+                        self._marcar_pedido_visualizado(pedido_id)
+                        st.rerun()
+                    if col_a2.button("Entregue", key=f"entregue_{pedido_id}", use_container_width=True):
+                        if self.db.marcar_pedido_entregue(pedido_id):
+                            st.toast(f"✅ Pedido #{num} marcado como Entregue!", icon="✅")
+                            # Limpar cache
+                            cache_key = f'lista_pedidos_confirmados_{st.session_state.get("nome_usuario", "")}_{st.session_state.get("perfil_usuario", "FORNECEDOR")}'
+                            if cache_key in st.session_state:
+                                del st.session_state[cache_key]
+                            time.sleep(1)
+                            st.rerun()
+                else:
+                    if col_a.button("Ver Detalhes", key=f"ver_conf_{pedido_id}", use_container_width=True):
+                        st.session_state['pedido_confirmado_aberto'] = pedido_id
+                        self._marcar_pedido_visualizado(pedido_id)
+                        st.rerun()
     
     def _renderizar_detalhes_pedido_confirmado(self, pedido_aberto, nome_usuario, perfil):
         cache_key_confirmados = f'lista_pedidos_confirmados_{nome_usuario}_{perfil}'
@@ -2185,7 +2238,7 @@ class AppClientePrime:
             self._renderizar_detalhes_pedido_fornecedor(pedido_aberto, df_pedidos, nome_usuario, perfil)
             return
         
-        st.info("INFO: 🟢 **Verde:** Orçamento enviado | 🟡 **Amarelo:** Pedido recente (até 2 dias) | 🟠 **Laranja:** Atenção necessária (3-6 dias) | 🔴 **Vermelho:** Urgente (7+ dias)")
+        st.info("INFO: 🟢 **Verde:** Orçamento enviado | 🟡 **Amarelo:** Pendente (0-2 dias) | 🟠 **Laranja:** Pendente (3-6 dias) | 🔴 **Vermelho:** Pendente (7+ dias) | ⚠️ **URGENTE:** Cobrança do cliente")
 
         # 3. CABEÇALHO DA LISTA COM BORDA
         with st.container(border=True):
@@ -2193,56 +2246,46 @@ class AppClientePrime:
             c_num.markdown('<div class="header-title">Pedido</div>', unsafe_allow_html=True)
             c_cli.markdown('<div class="header-title">Cliente</div>', unsafe_allow_html=True)
             c_status.markdown('<div class="header-title" style="text-align: center;">Status</div>', unsafe_allow_html=True)
-            c_data.markdown('<div class="header-title">Data</div>', unsafe_allow_html=True)
-            c_acao.markdown('<div class="header-title">Ação</div>', unsafe_allow_html=True)
+            c_data.markdown('<div class="header-title" style="text-align: center;">Data</div>', unsafe_allow_html=True)
+            c_acao.markdown('<div class="header-title" style="text-align: center;">Ação</div>', unsafe_allow_html=True)
             st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
             # 4. LISTAGEM DE PEDIDOS (Com borda ao redor de cada um)
-            # FIX N+1: pre-carregar status visualizado e urgente em batch antes do loop
-            _todos_ids = df_pedidos["id"].astype(int).tolist()
-            _ids_visualizados_batch = set()
-            _ids_urgentes_batch = set()
-            try:
-                with self.db.get_connection() as _conn:
-                    _cur = _conn.cursor()
-                    _cur.execute("SELECT pedido_id FROM pedidos_visualizados WHERE LOWER(usuario) = LOWER(%s) AND pedido_id = ANY(%s)", (nome_usuario, [str(i) for i in _todos_ids]))
-                    _ids_visualizados_batch = {r[0] for r in _cur.fetchall()}
-                    _cur.execute("SELECT DISTINCT pv.id FROM pedidos_vendas pv JOIN notificacoes_fornecedor nf ON pv.numero_pedido = nf.numero_pedido WHERE pv.id = ANY(%s) AND LOWER(nf.fornecedor) = LOWER(%s)", (_todos_ids, nome_usuario))
-                    _ids_urgentes_batch = {r[0] for r in _cur.fetchall()}
-            except Exception as e:
-                logger.error(f"Erro ao pre-carregar status de pedidos: {e}")
             for _, row in df_pedidos.iterrows():
                 pedido_id  = int(row['id'])
                 num        = str(row['numero_pedido'])
                 cliente    = str(row['cliente_nome'])
                 status     = str(row['status'])
                 data_criacao = pd.to_datetime(row['data_criacao'])
-                # FIX: normalizar timezone
-                if data_criacao.tzinfo is not None:
-                    data_criacao = data_criacao.tz_localize(None)
                 data_str   = data_criacao.strftime('%d/%m/%Y')
                 
                 # Calcular dias desde criação
                 dias_desde_criacao = (datetime.datetime.now() - data_criacao).days
                 
-                # Badge de status com cores dinâmicas para Pendente
+                # Badge de status com cores dinâmicas
                 if status == "Enviado":
                     badge_bg, badge_txt = "#D4EDDA", "#155724"  # Verde
-                else:  # Pendente
+                    status_texto = "Enviado"
+                else:  # Pendente - cores baseadas em dias
                     if dias_desde_criacao >= 7:
                         badge_bg, badge_txt = "#FFCCCC", "#8B0000"  # Vermelho
+                        status_texto = "Pendente"
                     elif dias_desde_criacao >= 3:
                         badge_bg, badge_txt = "#FFE5CC", "#CC5500"  # Laranja
+                        status_texto = "Pendente"
                     else:
                         badge_bg, badge_txt = "#FFF3CD", "#856404"  # Amarelo
+                        status_texto = "Pendente"
 
                 # Verificar se este pedido está aberto
                 pedido_aberto = st.session_state.get('pedido_aberto')
                 esta_aberto = (pedido_aberto == pedido_id)
                 
-                # FIX N+1: usar conjuntos pre-carregados em vez de query por pedido
-                eh_novo    = str(pedido_id) not in _ids_visualizados_batch
-                eh_urgente = pedido_id in _ids_urgentes_batch
+                # Verificar se é novo ANTES de abrir
+                eh_novo = self._pedido_eh_novo(pedido_id)
+                
+                # Verificar se é urgente (foi notificado pelo cliente)
+                eh_urgente = self._pedido_eh_urgente(pedido_id, nome_usuario)
                 
                 # Estilo de fundo apenas para coluna de pedido
                 estilo_pedido = 'background-color: #E3F2FD; border-left: 4px solid #0047AB; padding: 8px; border-radius: 5px;' if esta_aberto else 'padding-top:8px;'
@@ -2261,12 +2304,12 @@ class AppClientePrime:
                 col_s.markdown(f'''
                     <div style="background:{badge_bg}; color:{badge_txt}; padding:4px 8px; 
                     border-radius:12px; font-size:0.8rem; font-weight:bold; text-align:center; margin-top:8px;">
-                        {status}
+                        {status_texto}
                     </div>
                 ''', unsafe_allow_html=True)
-                col_d.markdown(f'<div class="black-text" style="padding-top:8px;">{data_str}</div>', unsafe_allow_html=True)
+                col_d.markdown(f'<div class="black-text" style="padding-top:8px; text-align:center;">{data_str}</div>', unsafe_allow_html=True)
                 
-                texto_botao = "✖ Fechar" if esta_aberto else ("Visualizar" if status == "Enviado" else "Ver / Responder")
+                texto_botao = "✖ Fechar" if esta_aberto else "Ver / Responder"
                 
                 if col_a.button(texto_botao, key=f"ver_{pedido_id}", use_container_width=True):
                     if pedido_aberto == pedido_id:
@@ -2295,19 +2338,6 @@ class AppClientePrime:
         if 'pedido_aberto' in st.session_state:
             num = st.session_state.get('pedido_num', pedido_id)
             
-            # Buscar status do pedido
-            row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
-            status_pedido = row_pedido['status'].values[0] if not row_pedido.empty else "Pendente"
-            
-            if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
-                del st.session_state['pedido_aberto']
-                if 'pedido_num' in st.session_state:
-                    del st.session_state['pedido_num']
-                cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                if cache_key_pedidos in st.session_state:
-                    del st.session_state[cache_key_pedidos]
-                st.rerun()
-            
             st.divider()
             # Verificar se é urgente e exibir badge
             eh_urgente = self._pedido_eh_urgente(pedido_id, nome_usuario)
@@ -2330,190 +2360,107 @@ class AppClientePrime:
             if df_itens.empty:
                 st.warning("Nenhum item encontrado para este pedido.")
             else:
-                # MODO VISUALIZAÇÃO (Status Enviado)
-                if status_pedido == "Enviado":
-                    st.info("👁️ Orçamento já enviado. Visualização somente leitura.")
-                    
-                    # Buscar observação
-                    try:
-                        with self.db.get_connection() as conn:
-                            cur = conn.cursor()
-                            cur.execute("""
-                                SELECT observacao FROM pedidos_vendas WHERE id = %s
-                            """, (pedido_id,))
-                            result = cur.fetchone()
-                            observacao_salva = result[0] if result and result[0] else ""
-                    except Exception as e:
-                        logger.error(f"Erro ao buscar observação: {e}")
-                        observacao_salva = ""
-                    
-                    # Exibir tabela somente leitura
-                    st.dataframe(
-                        df_itens[['codigo_produto', 'nome_produto', 'quantidade', 'valor_unitario', 'impostos', 'frete', 'prazo_entrega']],
-                        column_config={
-                            "codigo_produto": "Código",
-                            "nome_produto": "Produto",
-                            "quantidade": "Qtd",
-                            "valor_unitario": st.column_config.NumberColumn("Vl. Unit.", format="R$ %.2f"),
-                            "impostos": st.column_config.NumberColumn("Impostos", format="R$ %.2f"),
-                            "frete": "Frete",
-                            "prazo_entrega": "Prazo"
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    # Cálculo de Total
-                    df_itens['_total'] = (df_itens['quantidade'] * df_itens['valor_unitario'].fillna(0)) + df_itens['impostos'].fillna(0)
-                    total_geral = df_itens['_total'].sum()
-                    st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
-                    st.write("")
-                    
-                    # Exibir observação (somente leitura)
-                    if observacao_salva:
-                        st.info(f"📝 **Observação:** {observacao_salva}")
-                    
-                    # Botões: PDF e Fechar
-                    col_pdf, col_fechar = st.columns(2)
-                    with col_pdf:
-                        forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
-                        pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_itens)
-                        st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
-                    with col_fechar:
-                        if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_view_{pedido_id}"):
-                            del st.session_state['pedido_aberto']
-                            cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                            if cache_key_pedidos in st.session_state:
-                                del st.session_state[cache_key_pedidos]
-                            st.rerun()
+                st.info("✏️ Preencha os campos abaixo e confirme a resposta.")
                 
-                # MODO EDIÇÃO (Status Pendente)
-                else:
-                    st.info("✏️ Preencha os campos abaixo e confirme a resposta.")
-                    
-                    # Campos de preenchimento rápido e pesquisa
-                    col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
-                    with col1:
-                        pesquisa_produto = st.text_input("Pesquisar produto", key=f"pesquisa_prod_{pedido_id}")
-                    with col2:
-                        valor_global = st.number_input("Preencher Vl. Unit.", min_value=0.0, step=0.01, key=f"valor_global_{pedido_id}")
-                    with col3:
-                        imposto_global = st.number_input("Preencher Impostos", min_value=0.0, step=0.01, key=f"imposto_global_{pedido_id}")
-                    with col4:
-                        frete_global = st.selectbox("Preencher Frete", ["", "CIF", "FOB"], key=f"frete_global_{pedido_id}")
-                    
-                    col_data, _ = st.columns([2, 8])
-                    with col_data:
-                        data_global = st.date_input("Preencher todas as datas", key=f"data_global_{pedido_id}", value=None)
+                # Campos de preenchimento rápido e pesquisa
+                col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1.5])
+                with col1:
+                    pesquisa_produto = st.text_input("Pesquisar produto", key=f"pesquisa_prod_{pedido_id}")
+                with col2:
+                    valor_global = st.number_input("Preencher Vl. Unit.", min_value=0.0, step=0.01, key=f"valor_global_{pedido_id}")
+                with col3:
+                    imposto_global = st.number_input("Preencher Impostos", min_value=0.0, step=0.01, key=f"imposto_global_{pedido_id}")
+                with col4:
+                    frete_global = st.selectbox("Preencher Frete", ["", "CIF", "FOB"], key=f"frete_global_{pedido_id}")
                 
-                    
-                    # Filtrar itens se houver pesquisa
-                    df_itens_filtrado = df_itens.copy()
-                    if pesquisa_produto:
-                        df_itens_filtrado = df_itens[
-                            df_itens['codigo_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False) |
-                            df_itens['nome_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False)
-                        ]
-                    
-                    if df_itens_filtrado.empty:
-                        st.warning("Nenhum produto encontrado com os termos de pesquisa.")
-                        df_itens_filtrado = df_itens  # Mostra todos se não encontrar
-                    
-                    # Converter prazo_entrega para datetime para usar DateColumn
-                    df_itens_filtrado['prazo_entrega'] = pd.to_datetime(df_itens_filtrado['prazo_entrega'], errors='coerce')
-                    
-                    # Preencher todas as datas se data_global foi informada
-                    if data_global:
-                        df_itens_filtrado['prazo_entrega'] = pd.to_datetime(data_global)
-                    
-                    # Preencher valores globais se informados
-                    if valor_global > 0:
-                        df_itens_filtrado['valor_unitario'] = valor_global
-                    if imposto_global > 0:
-                        df_itens_filtrado['impostos'] = imposto_global
-                    if frete_global:
-                        df_itens_filtrado['frete'] = frete_global
+                col_data, _ = st.columns([2, 8])
+                with col_data:
+                    data_global = st.date_input("Preencher todas as datas", key=f"data_global_{pedido_id}", value=None)
+                
+                # Filtrar itens se houver pesquisa
+                df_itens_filtrado = df_itens.copy()
+                if pesquisa_produto:
+                    df_itens_filtrado = df_itens[
+                        df_itens['codigo_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False) |
+                        df_itens['nome_produto'].astype(str).str.contains(pesquisa_produto, case=False, na=False)
+                    ]
+                
+                if df_itens_filtrado.empty:
+                    st.warning("Nenhum produto encontrado com os termos de pesquisa.")
+                    df_itens_filtrado = df_itens  # Mostra todos se não encontrar
+                
+                # Converter prazo_entrega para datetime para usar DateColumn
+                df_itens_filtrado['prazo_entrega'] = pd.to_datetime(df_itens_filtrado['prazo_entrega'], errors='coerce')
+                
+                # Preencher todas as datas se data_global foi informada
+                if data_global:
+                    df_itens_filtrado['prazo_entrega'] = pd.to_datetime(data_global)
+                
+                # Preencher valores globais se informados
+                if valor_global > 0:
+                    df_itens_filtrado['valor_unitario'] = valor_global
+                if imposto_global > 0:
+                    df_itens_filtrado['impostos'] = imposto_global
+                if frete_global:
+                    df_itens_filtrado['frete'] = frete_global
 
-                    df_edit = st.data_editor(
-                        df_itens_filtrado,
-                        column_config={
-                            "id": None,
-                            "codigo_produto": st.column_config.TextColumn("Codigo", disabled=True),
-                            "nome_produto":   st.column_config.TextColumn("Produto", disabled=True, width="large"),
-                            "quantidade":     st.column_config.NumberColumn("Qtd",  disabled=True),
-                            "valor_unitario": st.column_config.NumberColumn("✏️ Vl. Unit.", format="R$ %.2f", min_value=0.0),
-                            "impostos":       st.column_config.NumberColumn("✏️ Impostos", format="R$ %.2f", min_value=0.0),
-                            "frete":          st.column_config.SelectboxColumn("✏️ Frete", options=["CIF", "FOB"]),
-                            "prazo_entrega":  st.column_config.DateColumn("✏️ Prazo", format="DD/MM/YYYY"),
-                        },
-                        hide_index=True, use_container_width=True, key=f"editor_{pedido_id}"
-                    )
+                df_edit = st.data_editor(
+                    df_itens_filtrado,
+                    column_config={
+                        "id": None,
+                        "codigo_produto": st.column_config.TextColumn("Codigo", disabled=True),
+                        "nome_produto":   st.column_config.TextColumn("Produto", disabled=True, width="large"),
+                        "quantidade":     st.column_config.NumberColumn("Qtd",  disabled=True),
+                        "valor_unitario": st.column_config.NumberColumn("✏️ Vl. Unit.", format="R$ %.2f", min_value=0.0),
+                        "impostos":       st.column_config.NumberColumn("✏️ Impostos", format="R$ %.2f", min_value=0.0),
+                        "frete":          st.column_config.SelectboxColumn("✏️ Frete", options=["CIF", "FOB"]),
+                        "prazo_entrega":  st.column_config.DateColumn("✏️ Prazo", format="DD/MM/YYYY"),
+                    },
+                    hide_index=True, use_container_width=True, key=f"editor_{pedido_id}"
+                )
 
-                    # Cálculo de Total (frete agora é texto, não soma)
-                    df_edit['_total'] = (df_edit['quantidade'] * df_edit['valor_unitario'].fillna(0)) + \
-                                         df_edit['impostos'].fillna(0)
-                    total_geral = df_edit['_total'].sum()
+                # Cálculo de Total (frete agora é texto, não soma)
+                df_edit['_total'] = (df_edit['quantidade'] * df_edit['valor_unitario'].fillna(0)) + \
+                                     df_edit['impostos'].fillna(0)
+                total_geral = df_edit['_total'].sum()
 
-                    st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
-                    st.write("")
-                    
-                    # Campo de observação
-                    observacao = st.text_area(
-                        "Observação (opcional)",
-                        key=f"obs_{pedido_id}",
-                        placeholder="Digite aqui observações sobre o orçamento (prazos, condições, etc.)",
-                        height=100
-                    )
-                    st.write("")
+                st.markdown(f'<div style="text-align:right; font-size:1.2rem; font-weight:900; color:#0047AB;">Total: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
+                st.write("")
+                
+                # Campo de observação
+                observacao = st.text_area(
+                    "Observação (opcional)",
+                    key=f"obs_{pedido_id}",
+                    placeholder="Digite aqui observações sobre o orçamento (prazos, condições, etc.)",
+                    height=100
+                )
+                st.write("")
 
-                    col_pdf, col_confirm, col_fechar = st.columns([1, 1, 1])
+                col_pdf, col_confirm, col_fechar = st.columns([1, 1, 1])
 
-                    with col_pdf:
-                        # Lógica do PDF
-                        row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
-                        forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
-                        pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_edit)
-                        st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
+                with col_pdf:
+                    # Lógica do PDF
+                    row_pedido = df_pedidos[df_pedidos['id'] == pedido_id]
+                    forn_nome = row_pedido['fornecedor_nome'].values[0] if not row_pedido.empty else "Fornecedor"
+                    pdf_bytes = self.gerar_pdf_pedido(forn_nome, df_edit)
+                    st.download_button("📄 Baixar PDF", pdf_bytes, f"Pedido_{num}.pdf", "application/pdf", use_container_width=True)
 
-                    with col_confirm:
-                        if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True, key=f"confirm_{pedido_id}"):
-                            st.session_state[f'confirmar_resposta_{pedido_id}'] = True
-                            st.rerun()
-                    
-                    # Pop-up de confirmação
-                    if st.session_state.get(f'confirmar_resposta_{pedido_id}', False):
-                        @st.dialog("Confirmar Envio de Orçamento")
-                        def confirmar_resposta():
-                            st.warning(f"📦 Deseja confirmar o envio do orçamento do pedido **#{num}**?")
-                            st.info(f"💰 Total: **R$ {total_geral:,.2f}**")
-                            if observacao:
-                                st.info(f"📝 Observação: {observacao}")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button("✅ Confirmar", type="primary", use_container_width=True):
-                                    if self.db.salvar_resposta_pedido(pedido_id, df_edit, observacao):
-                                        del st.session_state[f'confirmar_resposta_{pedido_id}']
-                                        st.toast(f"✅ Orçamento do pedido #{num} enviado!", icon="✅")
-                                        del st.session_state['pedido_aberto']
-                                        # FIX: invalidar cache para refletir status Enviado na lista
-                                        cache_key = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                                        if cache_key in st.session_state:
-                                            del st.session_state[cache_key]
-                                        st.rerun()
-                            with col2:
-                                if st.button("❌ Cancelar", type="secondary", use_container_width=True):
-                                    del st.session_state[f'confirmar_resposta_{pedido_id}']
-                                    st.rerun()
-                        confirmar_resposta()
-
-                    with col_fechar:
-                        if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_{pedido_id}"):
+                with col_confirm:
+                    if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True, key=f"confirm_{pedido_id}"):
+                        if self.db.salvar_resposta_pedido(pedido_id, df_edit, observacao):
+                            st.toast(f"✅ Orçamento do pedido #{num} enviado com sucesso!", icon="✅")
+                            time.sleep(1)
                             del st.session_state['pedido_aberto']
-                            # Limpar cache para recarregar lista
-                            cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
-                            if cache_key_pedidos in st.session_state:
-                                del st.session_state[cache_key_pedidos]
                             st.rerun()
+
+                with col_fechar:
+                    if st.button("✖ Fechar", type="secondary", use_container_width=True, key=f"close_{pedido_id}"):
+                        del st.session_state['pedido_aberto']
+                        # Limpar cache para recarregar lista
+                        cache_key_pedidos = f'lista_pedidos_fornecedor_{nome_usuario}_{perfil}'
+                        if cache_key_pedidos in st.session_state:
+                            del st.session_state[cache_key_pedidos]
+                        st.rerun()
 
     def _renderizar_filtros_cobertura(self):
         """Renderiza filtros em cascata da tela de cobertura"""
@@ -2815,9 +2762,9 @@ class AppClientePrime:
                     
                     # Mensagens de notificação sempre abaixo dos filtros
                     if modo_envio == "Fornecedores Específicos" and fornecedores_selecionados:
-                        st.info("📌 Itens vendidos por múltiplos fornecedores selecionados serão priorizados para o primeiro da lista. Itens não vendidos pelos fornecedores selecionados não serão enviados.")
+                        st.info("📌 Itens de marcas não vendidas pelos fornecedores selecionados permanecerão com o fornecedor original.")
                     elif modo_envio == "Fornecedor Único" and fornecedor_unico:
-                        st.info(f"📌 Serão enviados somente itens vendidos por {fornecedor_unico}. Itens não disponíveis no catálogo deste fornecedor não serão enviados.")
+                        st.info(f"📌 Serão enviados somente itens vendidos por {fornecedor_unico}.")
                     elif modo_envio == "Todos os Fornecedores":
                         st.info("📌 Modo 'Todos': Cada item será enviado para TODOS os fornecedores que vendem sua marca.")
                     
@@ -2831,55 +2778,39 @@ class AppClientePrime:
                             # Mostra "Todos" na coluna
                             df_final['fornecedor'] = "Todos"
                         elif modo_envio == "Fornecedores Específicos" and fornecedores_selecionados:
-                            # Para cada item, atribui APENAS ao primeiro fornecedor selecionado que vende a marca
+                            # Para cada item, verifica TODOS os fornecedores selecionados que vendem a marca
                             indices_manter = []
-                            itens_nao_enviados = []
                             for idx, row in df_final.iterrows():
                                 marca_item = str(row.get('marca', '')).upper()
-                                fornecedor_atribuido = None
+                                fornecedores_que_vendem = []
                                 
-                                # Verifica fornecedores na ordem de seleção e atribui ao primeiro que vende
+                                # Verifica quais fornecedores selecionados vendem esta marca
                                 for forn_sel in fornecedores_selecionados:
                                     marcas_forn = df_forn_db[df_forn_db['fornecedor'].str.strip() == forn_sel.strip()]['marca'].str.upper().tolist()
                                     if marca_item in marcas_forn:
-                                        fornecedor_atribuido = forn_sel
-                                        break
+                                        fornecedores_que_vendem.append(forn_sel)
                                 
-                                # Se encontrou fornecedor, atribui e mantém o item
-                                if fornecedor_atribuido:
-                                    df_final.at[idx, 'fornecedor'] = fornecedor_atribuido
+                                # Se pelo menos um fornecedor vende, adiciona o item
+                                if fornecedores_que_vendem:
+                                    df_final.at[idx, 'fornecedor'] = ', '.join(sorted(fornecedores_que_vendem))
                                     indices_manter.append(idx)
-                                else:
-                                    # Item não será enviado
-                                    itens_nao_enviados.append(f"{row.get('idproduto', '')} - {row.get('produto', '')}")
                             
                             # Remove itens que nenhum fornecedor selecionado vende
                             df_final = df_final.loc[indices_manter]
-                            
-                            # Informar sobre itens não enviados
-                            if itens_nao_enviados:
-                                st.warning(f"⚠️ {len(itens_nao_enviados)} item(ns) não fazem parte do catálogo dos fornecedores selecionados e não serão enviados.")
                         elif modo_envio == "Fornecedor Único" and fornecedor_unico:
                             # Buscar marcas do fornecedor único
                             marcas_forn_unico = df_forn_db[df_forn_db['fornecedor'] == fornecedor_unico]['marca'].str.upper().tolist()
                             
                             # Filtrar apenas itens que o fornecedor vende
                             indices_manter = []
-                            itens_nao_enviados = []
                             for idx, row in df_final.iterrows():
                                 marca_item = str(row.get('marca', '')).upper()
                                 if marca_item in marcas_forn_unico:
                                     df_final.at[idx, 'fornecedor'] = fornecedor_unico
                                     indices_manter.append(idx)
-                                else:
-                                    itens_nao_enviados.append(f"{row.get('idproduto', '')} - {row.get('produto', '')}")
                             
                             # Remove itens que o fornecedor não vende
                             df_final = df_final.loc[indices_manter]
-                            
-                            # Informar sobre itens não enviados
-                            if itens_nao_enviados:
-                                st.warning(f"⚠️ {len(itens_nao_enviados)} item(ns) não fazem parte do catálogo de {fornecedor_unico} e não serão enviados.")
                         else:
                             # Pré Definido: mantém o fornecedor original
                             pass
@@ -2930,9 +2861,7 @@ class AppClientePrime:
                     if modo_envio == "Todos os Fornecedores":
                         config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True)
                     elif modo_envio == "Fornecedores Específicos":
-                        config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True, help="Fornecedor selecionado que vende este item")
-                    elif modo_envio == "Fornecedor Único":
-                        config_fornecedor = st.column_config.TextColumn("Fornecedor", disabled=True)
+                        config_fornecedor = st.column_config.TextColumn("Fornecedor(es)", disabled=True, help="Itens serão enviados para todos os fornecedores listados")
                     else:
                         config_fornecedor = st.column_config.SelectboxColumn("✏️ Fornecedor", options=lista_fornecedores, required=True)
                     
@@ -2954,7 +2883,8 @@ class AppClientePrime:
                         use_container_width=True,
                         hide_index=True,
                         height=500,
-                        key="editor_cobertura"
+                        key="editor_cobertura",
+                        on_change=self.salvar_edicoes_cobertura
                     )
                     
                     # Processar itens desmarcados (remover da lista)
@@ -2966,7 +2896,7 @@ class AppClientePrime:
                         st.session_state.itens_removidos = itens_removidos
                         st.rerun()
                     
-                    # Botão de Envio
+                    # Botão de Envio direto
                     col_btn, _ = st.columns([1, 3])
                     with col_btn:
                         if st.button("📋 ENVIAR PEDIDOS", type="primary", use_container_width=True):
@@ -3012,9 +2942,11 @@ class AppClientePrime:
                                                     erros.append(forn)
                                                     logger.error(f"Erro ao enviar para {forn}: {e}")
                                         elif modo_envio == "Fornecedores Específicos":
+                                            # Para cada item, envia para todos os fornecedores listados
                                             for forn in fornecedores_selecionados:
                                                 try:
-                                                    df_forn = df_envio[df_envio['fornecedor'] == forn].copy()
+                                                    # Filtra itens que este fornecedor deve receber
+                                                    df_forn = df_envio[df_envio['fornecedor'].str.contains(forn, na=False)].copy()
                                                     
                                                     if not df_forn.empty:
                                                         df_forn['Qtd Compra'] = df_forn['reposicao']
@@ -3047,16 +2979,15 @@ class AppClientePrime:
                                                     logger.error(f"Erro ao enviar para {forn}: {e}")
                                     
                                     if enviados:
-                                        st.toast(f"✅ Envio concluído! {enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
+                                        st.toast(f"{enviados} pedido(s) enviado(s) com sucesso!", icon="✅")
                                         st.session_state.itens_removidos = []
                                         st.session_state.df_analise_cache = pd.DataFrame()
                                         st.session_state.filtros_anteriores = None
                                         st.session_state.filtrar_sem_fornecedor = False
-                                        st.session_state.cache_qtd_itens = {}
+                                        time.sleep(1)
                                         st.rerun()
                                     if erros:
                                         st.error(f"Falha ao registrar pedido para: {', '.join(erros)}")
-                                        st.rerun()
             
             elif filtros_anteriores is not None and 'df_analise_cache' in st.session_state and st.session_state.df_analise_cache.empty:
                 st.warning("Nenhum item encontrado com os filtros selecionados.")
@@ -3188,10 +3119,22 @@ class AppClientePrime:
     def _renderizar_detalhes_solicitacao(self, grupo):
         """Renderiza os detalhes de uma solicitação específica"""
         if 'solicitacao_aberta' in st.session_state:
+            # Verificar se é novo e exibir badge
             eh_novo = self._pedido_eh_novo(grupo)
             badge_novo = ' <span style="background:#FFC107;color:#000000;padding:4px 12px;border-radius:12px;font-size:0.8rem;font-weight:bold;margin-left:10px;">NOVO</span>' if eh_novo else ''
             
-            st.markdown(f'<h2 style="color:black; font-weight:900; margin:0;">Análise Comparativa - #{grupo}{badge_novo}</h2>', unsafe_allow_html=True)
+            st.markdown(f'<h2 style="color:black; font-weight:900;">Análise Comparativa - #{grupo}{badge_novo}</h2>', unsafe_allow_html=True)
+            
+            # Botão voltar
+            if st.button("← Voltar para Lista", type="secondary", use_container_width=False):
+                del st.session_state['solicitacao_aberta']
+                # Limpar cache da lista para recarregar
+                cache_key_lista = f'lista_solicitacoes_{st.session_state.get("nome_usuario", "")}'
+                if cache_key_lista in st.session_state:
+                    del st.session_state[cache_key_lista]
+                st.rerun()
+            
+            st.divider()
             
             # Cache dos detalhes para evitar recarregar a cada interação
             cache_key = f'detalhes_{grupo}'
@@ -3387,6 +3330,8 @@ class AppClientePrime:
             
             # Exibir pedidos
             if pedidos:
+                    st.write("---")
+                    
                     # CSS específico para Pedidos Gerados
                     st.markdown("""
                         <style>
@@ -3403,18 +3348,7 @@ class AppClientePrime:
                     
                     st.markdown('<h3 style="color:#000000 !important;">Pedidos Gerados</h3>', unsafe_allow_html=True)
                     
-                    # Informações estruturadas sobre os pedidos
-                    st.markdown("""
-                        <div style="background-color:#F8F9FA; padding:15px; border-radius:8px; border-left:4px solid #0047AB; margin-bottom:15px;">
-                            <p style="color:#000000; margin:0; font-weight:600; font-size:0.95rem;">📋 Instruções de Envio</p>
-                            <ul style="color:#333333; margin:8px 0 0 0; padding-left:20px; font-size:0.9rem;">
-                                <li>Revise as quantidades e valores antes de confirmar</li>
-                                <li>Edite a quantidade diretamente na tabela, se necessário</li>
-                                <li>Baixe o PDF para registro antes do envio</li>
-                                <li>Após o envio, o pedido será encaminhado ao fornecedor</li>
-                            </ul>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    st.info("💡 Se necessário, é possível alterar a quantidade do pedido antes de enviar.")
                     
                     # Usar tabs para múltiplos fornecedores
                     fornecedores_list = list(pedidos.keys())
@@ -3473,17 +3407,12 @@ class AppClientePrime:
                                         """, (grupo, fornecedor))
                                         result = cur.fetchone()
                                         if result:
-                                            st.markdown(f"""
-                                                <div style="background-color:#F8F9FA; padding:16px; border-radius:8px; border-left:4px solid #0047AB; margin:20px 0;">
-                                                    <p style="color:#0047AB; margin:0 0 8px 0; font-weight:700; font-size:0.95rem;">Observações do Fornecedor</p>
-                                                    <p style="color:#333333; margin:0; font-size:0.9rem; line-height:1.5;">{result[0]}</p>
-                                                </div>
-                                            """, unsafe_allow_html=True)
+                                            st.info(f"📝 **Observação do Fornecedor:** {result[0]}")
                                 except Exception as e:
                                     logger.error(f"Erro ao buscar observação: {e}")
                                 
                                 # Botões PDF e Enviar
-                                col_pdf, col_enviar, col_voltar = st.columns(3)
+                                col_pdf, col_enviar = st.columns(2)
                                 with col_pdf:
                                     pdf_bytes = self.gerar_pdf_pedido(fornecedor, df_editado)
                                     st.download_button(
@@ -3496,12 +3425,11 @@ class AppClientePrime:
                                         type="primary"
                                     )
                                 with col_enviar:
-                                    if st.button("✅ Enviar Pedido", key=f"enviar_{fornecedor}", type="primary", use_container_width=True):
+                                    if st.button("Enviar Pedido", key=f"enviar_{fornecedor}", type="primary", use_container_width=True):
                                         # Validar quantidade antes de enviar
                                         if df_editado['quantidade'].min() < 1:
                                             st.error("❌ Quantidade deve ser maior que zero")
                                         else:
-                                            # Enviar pedido diretamente sem confirmação
                                             cliente_nome = st.session_state.get('nome_usuario', 'Cliente')
                                             try:
                                                 df_envio = df_editado.copy()
@@ -3520,18 +3448,17 @@ class AppClientePrime:
                                                     conn.commit()
                                                     cur.close()
                                                 
-                                                st.toast(f"✅ Pedido {numero} enviado para {fornecedor}!", icon="✅")
+                                                st.toast(f"Pedido #{numero} enviado para {fornecedor} com sucesso!", icon="✅")
+                                                time.sleep(1)
                                                 st.rerun()
                                             except Exception as e:
                                                 st.error(f"❌ Erro ao criar pedido para {fornecedor}. Tente novamente.")
                                                 logger.error(f"Erro ao criar pedido para {fornecedor}: {e}")
-                                with col_voltar:
-                                    if st.button("← Voltar", type="secondary", use_container_width=True, key=f"voltar_{fornecedor}"):
-                                        del st.session_state['solicitacao_aberta']
-                                        cache_key_lista = f'lista_solicitacoes_{st.session_state.get("nome_usuario", "")}'
-                                        if cache_key_lista in st.session_state:
-                                            del st.session_state[cache_key_lista]
-                                        st.rerun()
+
+
+# NOTA: a função confirmar_envio_pedido abaixo foi removida pois estava duplicada
+# e nunca era chamada — os diálogos de confirmação são definidos inline nas telas
+# que os utilizam, com acesso ao contexto local necessário.
 
 @st.dialog("Manual do Usuário", width="large")
 def exibir_manual():
@@ -3579,15 +3506,13 @@ Identifica **o quê**, **quanto** e **onde** comprar, e envia diretamente aos fo
 2. Escolha "Sugestão de Compra"
 3. Configure os parâmetros (dias de cobertura alvo e estoque mínimo)
 4. Clique em "GERAR ANÁLISE"
-5. **Escolha o modo de envio:** (Não envia itens que não fazem parte do estoque do fornecedor)
-   - **Pré Definido:** Usa o fornecedor já atribuído a cada item
+5. **Escolha o modo de envio:**
    - **Todos os Fornecedores:** Envia para todos cadastrados
-   - **Fornecedores Específicos:** Selecione quais receberão o pedido 
-   - **Fornecedor Único:** Concentra todo o pedido em um fornecedor
+   - **Fornecedores Específicos:** Selecione quais receberão o pedido
 6. **Edite a tabela:**
    - ✏️ **Reposição:** Ajuste a quantidade a comprar
-   - ✏️ **Fornecedor:** Escolha/altere o fornecedor para cada item
-   - **Incluir:** Desmarque itens que não deseja enviar
+   - ✏️ **Fornecedor:** Escolha o fornecedor para cada item
+   - **Remover:** Marque itens que não deseja incluir
 7. Use o botão **"↩️ Desfazer Última Remoção"** se excluir algo por engano
 8. Clique em **"📋 ENVIAR PEDIDOS"** para criar os pedidos automaticamente
 
@@ -3626,13 +3551,11 @@ Compara cotações e identifica a melhor opção de compra.
 ---
 
 ### 💡 Dicas Importantes
-* **Produtos sem Marca:** O sistema atribui automaticamente fornecedor para itens sem marca cadastrada
-* **Remoção de Itens:** Use o checkbox "Incluir" e desfaça com o botão de rollback
+* **Remoção de Itens:** Use o checkbox "Remover" e desfaça com o botão de rollback
 * **Edição Direta:** Todos os campos marcados com ✏️ são editáveis
 * **Filtros:** Use filtros específicos para análises mais precisas
-* **Modo de Envio:** Escolha o modo adequado conforme sua estratégia de compra
+* **Modo de Envio:** Escolha "Específicos" para enviar apenas para alguns fornecedores
 * **Rollback:** O botão desfaz remoções uma por uma (última removida primeiro)
-* **Cache Otimizado:** Sistema carrega dados mais rápido com cache inteligente
 
 ---
 
@@ -3640,8 +3563,6 @@ Compara cotações e identifica a melhor opção de compra.
 * O sistema cria pedidos separados automaticamente por fornecedor
 * Após enviar, os pedidos ficam disponíveis para os fornecedores responderem
 * Você pode acompanhar as respostas em "Inteligência de Compra"
-* Ao trocar de aba, o sistema limpa automaticamente pedidos abertos
-* Dados de catálogo (marcas, grupos, etc.) são atualizados a cada hora
 
 ---
 *Você pode fechar esta janela clicando no 'X' ou fora da caixa.*
@@ -3827,6 +3748,7 @@ def verificar_login():
                             st.session_state.menu_ativo = "Orçamento"
                         else:
                             st.session_state.menu_ativo = "Gerar Cobertura"
+                        st.success(f"Bem-vindo, {dados_usuario[1]}!")
                         logger.info(f"Login bem-sucedido: {user_input} — perfil: {dados_usuario[2]}")
                         st.rerun()
                     else:
@@ -3859,13 +3781,6 @@ if __name__ == "__main__":
 
     app    = AppClientePrime()
     perfil = st.session_state.get('perfil_usuario', 'CLIENTE')
-    nome_usuario = st.session_state.get('nome_usuario', '')
-    
-    # Pré-carregar dados básicos em background
-    app.db.buscar_filiais()
-    app.db.buscar_fornecedores()
-    app.db.buscar_notificacoes(nome_usuario, perfil)
-    
     app.render_sidebar()
 
     menu = st.session_state.menu_ativo
@@ -3873,16 +3788,12 @@ if __name__ == "__main__":
     # ── Roteamento por perfil ────────────────────────────────────
     if menu == "Orçamento":
         if perfil in ("ADM", "FORNECEDOR"):
-            # Pré-carregar dados do menu
-            app.db.buscar_pedidos_fornecedor(nome_usuario if perfil == "FORNECEDOR" else None)
             app.tela_pedidos_fornecedor()
         else:
             st.warning("Você não tem permissão para acessar esta área.")
     
     elif menu == "Pedidos":
         if perfil in ("ADM", "FORNECEDOR"):
-            # Pré-carregar dados do menu
-            app.db.buscar_pedidos_confirmados(nome_usuario if perfil == "FORNECEDOR" else None)
             app.tela_pedidos_confirmados()
         else:
             st.warning("Você não tem permissão para acessar esta área.")
@@ -3892,18 +3803,10 @@ if __name__ == "__main__":
             st.warning("Você não tem permissão para acessar esta área.")
             st.stop()
         if menu == "Gerar Cobertura":
-            # Pré-carregar dados do menu
-            app.db.buscar_marcas()
-            app.db.buscar_grupos()
-            app.db.buscar_subgrupos()
             app.tela_cobertura()
         elif menu == "Inteligência de Compra":
-            # Pré-carregar dados do menu
-            app.db.buscar_pedidos_respondidos(nome_usuario)
             app.tela_analise_retorno()
         elif menu == "Meus Pedidos":
-            # Pré-carregar dados do menu
-            app.db.buscar_pedidos_cliente(nome_usuario)
             app.tela_visualizar_pedidos_cliente()
 
     # ── Rodapé da sidebar ────────────────────────────────────────
