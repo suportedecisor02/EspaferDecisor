@@ -97,7 +97,7 @@ class PDF(FPDF):
         self.ln(5)
         self.set_font('Arial', 'B', 18)
         self.set_text_color(50, 50, 50)
-        self.cell(0, 10, 'REDE ESPAFER', 0, 1, 'L')
+        self.cell(0, 10, 'ESPAFER', 0, 1, 'L')
         
         subtitulo_limpo = self.subtitulo_rel.encode('latin-1', 'replace').decode('latin-1')
         self.set_font('Arial', '', 10)
@@ -1699,7 +1699,7 @@ class AppClientePrime:
         # Cabeçalho profissional
         pdf.set_font('Arial', 'B', 18)
         pdf.set_text_color(*PRETO)
-        pdf.cell(0, 10, 'REDE ESPAFER', 0, 1, 'L')
+        pdf.cell(0, 10, 'ESPAFER', 0, 1, 'L')
         pdf.set_font('Arial', '', 9)
         pdf.set_text_color(*CINZA)
         pdf.cell(0, 5, 'Solicitacao de Cotacao de Materiais', 0, 1, 'L')
